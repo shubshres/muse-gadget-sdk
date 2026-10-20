@@ -276,11 +276,17 @@ things you can change:
 
 - **Shorter answers.** Ask for them in the message itself, such as "Answer in
   one sentence."
-- **Spoken answers.** Send each reply's text to a text-to-speech API of your
-  choice and play the audio it returns. On boards with PSRAM, `start_tts` in
-  [`components/muse/muse_chat_session.cpp`](components/muse/muse_chat_session.cpp)
-  is the spot: it has the reply text, and the MP3 decoder, speaker and volume
-  are already wired up there.
+- **Spoken answers on the Waveshare ESP32-S3-Touch-AMOLED-1.75C.** Create an
+  Azure Speech **Free (F0)** resource, then enter its key under **Settings >
+  Muse > Azure Speech key** on the board. The Azure region defaults to `eastus`;
+  change **Azure region** there if your resource uses another one. The board
+  sends completed reply text directly to Azure and plays its 16 kHz MP3 through
+  its speaker. If the speaker is off, the key is unset, or Azure rejects the
+  request, the reply remains as captions. The key stays in NVS on the board;
+  do not commit it or put it in a generated firmware image. Azure provides the
+  speech, so this mode needs Wi-Fi. Other boards still use caption-only replies.
+  With the board connected by USB, `python3 tools/muse/azure_key.py` also saves
+  the key: it prompts without showing the key or putting it in shell history.
 
 A few things worth knowing:
 

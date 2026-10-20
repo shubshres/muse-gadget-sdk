@@ -67,6 +67,9 @@ extern "C" {
 #include "cJSON.h"
 #include "minimp3.h"
 #include "muse_account_api.h"
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#include "muse_azure_tts.h"
+#endif
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
@@ -247,6 +250,8 @@ struct turn_t {
     uint8_t *mp3;            /* MP3_BUF */
     size_t mp3_len;
     bool mp3_ended;
+    uint8_t *azure_mp3;      /* completed Azure response, consumed by this task */
+    size_t azure_len, azure_off;
     mp3dec_t dec;
     resampler_t down;
     int kbps;
@@ -961,6 +966,9 @@ static void turn_reset_streams(void)
 static void turn_finish(void)
 {
     turn_reset_streams();
+    free(s_turn.azure_mp3);
+    s_turn.azure_mp3 = nullptr;
+    s_turn.azure_len = s_turn.azure_off = 0;
     s_turn.phase = P_IDLE;
     s_turn.dict_id = s_turn.chat_id = 0;
     s_turn.tts_msg = -1;
@@ -1518,28 +1526,27 @@ static void start_tts(void)
         if (m.tts != TTS_QUEUED) {
             continue;
         }
-        /*
-         * Replies are text, shown at reading pace: silence in place of speech
-         * paces the captions and ends the turn. To speak them instead, send
-         * the message's text (s_turn.texts + i * TEXT_MAX, if texts was
-         * allocated; up to TEXT_MAX - 1 bytes) to a TTS API of your choice and
-         * play the MP3 it returns. In place of the silence below: keep
-         * m.tts = TTS_ACTIVE and s_turn.tts_msg = i, set s_turn.silent = false,
-         * m.pcm_start = s_turn.pcm_out, m.pcm_frames = 0, s_turn.mp3_len = 0,
-         * s_turn.mp3_ended = false, s_turn.kbps = 0, s_turn.down_rate = 0 and
-         * mp3dec_init(&s_turn.dec). Then, on this task, pass the MP3 to
-         * tts_data() as it arrives (it buffers up to MP3_BUF and drops the
-         * rest, so hold off while it's full) and set s_turn.mp3_ended at the
-         * end. decode() plays it at the speaker's volume, captions following,
-         * and finishes the message once it's drained.
-         */
         m.pcm_start = s_turn.pcm_out;
-        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
+        show_reply_start(m);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+        if (s_turn.texts && muse_settings_speaker_on() && muse_settings_azure_tts_ready()) {
+            s_turn.silent = false;
+            m.pcm_frames = 0;
+            s_turn.mp3_len = 0;
+            s_turn.mp3_ended = false;
+            s_turn.kbps = s_turn.down_rate = 0;
+            mp3dec_init(&s_turn.dec);
+            if (muse_azure_tts_start(s_turn.gen, i, s_turn.texts + i * TEXT_MAX)) {
+                ESP_LOGI(TAG, "speaking message %s (%u chars)", m.id, (unsigned)m.len);
+                return;
+            }
+        }
+#endif
+        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         s_turn.silent = true;
         ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
-        show_reply_start(m);
         return;
     }
 }
@@ -1569,6 +1576,46 @@ static void tts_end(stream_t *s, bool ok)
         s_turn.tts_msg = -1;
     }
 }
+
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+static void pump_azure_tts(void)
+{
+    muse_azure_tts_result_t result;
+    while (muse_azure_tts_poll(&result)) {
+        if (s_turn.phase == P_WAIT_REPLY && s_turn.gen == result.generation &&
+            s_turn.tts_msg == result.message && !s_turn.silent) {
+            if (result.audio) {
+                s_turn.azure_mp3 = result.audio;
+                s_turn.azure_len = result.length;
+                s_turn.azure_off = 0;
+                result.audio = nullptr;
+            } else {
+                msg_t &m = s_turn.msgs[result.message];
+                m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
+                s_turn.silent = true;
+                ESP_LOGW(TAG, "Azure speech unavailable; showing captions");
+            }
+        }
+        free(result.audio);
+    }
+    if (s_turn.azure_mp3 && s_turn.tts_msg >= 0) {
+        size_t room = MP3_BUF - s_turn.mp3_len;
+        size_t left = s_turn.azure_len - s_turn.azure_off;
+        size_t n = left < room ? left : room;
+        if (n > 8192) n = 8192;
+        if (n) {
+            tts_data(s_turn.azure_mp3 + s_turn.azure_off, n);
+            s_turn.azure_off += n;
+        }
+        if (s_turn.azure_off == s_turn.azure_len) {
+            free(s_turn.azure_mp3);
+            s_turn.azure_mp3 = nullptr;
+            s_turn.azure_len = s_turn.azure_off = 0;
+            s_turn.mp3_ended = true;
+        }
+    }
+}
+#endif
 
 /* Speaker off: queues the shown message's silence while the reply buffer has room. */
 static void pace_silently(void)
@@ -1949,6 +1996,9 @@ static void hatch_task(void *arg)
 {
     (void)arg;
     for (;;) {
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+        pump_azure_tts();
+#endif
         cmd_t cmd;
         /* Resting, the socket's keepalive (PING_US) needs no quicker polls.
          * Resting unconnected, Wi-Fi may nap (muse_wifi_nap): wait for a
@@ -2069,6 +2119,11 @@ extern "C" void muse_hatch_start(void)
         s.cap = NDJSON_LINE_MAX;
     }
     s_turn.tts_msg = -1;
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+    if (!muse_azure_tts_init()) {
+        ESP_LOGE(TAG, "Azure speech setup failed; replies will be captions");
+    }
+#endif
     /* Stack in PSRAM: TLS, Noise and the MP3 decoder (~16 KB of scratch) all run here. */
     if (!s_cmds || !s_events || !s_in || !s_out || !s_turn.chunk || !s_turn.mp3 || (VOICE_NOTE && !s_turn.note) || !s_pcm || !s_pcm16 ||
         xTaskCreatePinnedToCoreWithCaps(hatch_task, "muse_chat", 48 * 1024, nullptr, 5, nullptr, 0,

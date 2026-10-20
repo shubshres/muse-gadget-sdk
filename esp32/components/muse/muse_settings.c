@@ -44,6 +44,8 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+    char azure_region[MUSE_AZURE_REGION_MAX + 1];
+    char azure_key[MUSE_AZURE_KEY_MAX + 1];
 } s = {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
@@ -52,6 +54,7 @@ static struct {
     .sleep_s = 120,
     .wifi_on = true,
     .host = DEFAULT_HOST,
+    .azure_region = "eastus",
 };
 
 static SemaphoreHandle_t s_lock;
@@ -132,6 +135,8 @@ esp_err_t muse_settings_init(void)
     load_str("host", s.host, sizeof(s.host));
     load_str("vm", s.vm, sizeof(s.vm));
     load_str("token", s.token, sizeof(s.token));
+    load_str("az_region", s.azure_region, sizeof(s.azure_region));
+    load_str("az_key", s.azure_key, sizeof(s.azure_key));
 
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
@@ -189,6 +194,22 @@ size_t muse_settings_hatch_token_len(void)
     size_t n;
     LOCKED(n = strlen(s.token));
     return n;
+}
+
+void muse_settings_azure_tts(char region[MUSE_AZURE_REGION_MAX + 1],
+                             char key[MUSE_AZURE_KEY_MAX + 1])
+{
+    LOCKED({
+        strlcpy(region, s.azure_region, MUSE_AZURE_REGION_MAX + 1);
+        strlcpy(key, s.azure_key, MUSE_AZURE_KEY_MAX + 1);
+    });
+}
+
+bool muse_settings_azure_tts_ready(void)
+{
+    bool ready;
+    LOCKED(ready = s.azure_region[0] && s.azure_key[0]);
+    return ready;
 }
 
 void muse_settings_set_volume(int pct)
@@ -293,5 +314,29 @@ esp_err_t muse_settings_set_hatch_token(const char *token, bool append)
     if (err == ESP_OK) {
         notify(MUSE_SETTING_HATCH);
     }
+    return err;
+}
+
+void muse_settings_set_azure_region(const char *region)
+{
+    LOCKED({
+        strlcpy(s.azure_region, region ? region : "", sizeof(s.azure_region));
+        save_str("az_region", s.azure_region);
+    });
+}
+
+esp_err_t muse_settings_set_azure_key(const char *key)
+{
+    esp_err_t err;
+    LOCKED({
+        const char *value = key ? key : "";
+        if (strlen(value) > MUSE_AZURE_KEY_MAX) {
+            err = ESP_ERR_INVALID_SIZE;
+        } else {
+            err = nvs_set_str(s_nvs, "az_key", value);
+            if (err == ESP_OK) err = nvs_commit(s_nvs);
+            if (err == ESP_OK) strlcpy(s.azure_key, value, sizeof(s.azure_key));
+        }
+    });
     return err;
 }

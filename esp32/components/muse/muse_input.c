@@ -701,6 +701,20 @@ static bool console_command(char *line, bool whole)
     if (whole && s_console_hook && s_console_hook(line)) {
         return true;
     }
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+    if (!strncmp(line, "azure.key=", 10)) {
+        const char *key = line + 10;
+        size_t len = strlen(key);
+        bool valid = whole && len > 0 && len <= MUSE_AZURE_KEY_MAX;
+        for (size_t i = 0; valid && i < len; i++) {
+            if ((unsigned char)key[i] < 0x21 || (unsigned char)key[i] > 0x7e) valid = false;
+        }
+        esp_err_t err = valid ? muse_settings_set_azure_key(key) : ESP_ERR_INVALID_ARG;
+        printf("@azure.key %s\n", err == ESP_OK ? "ok" : "error");
+        fflush(stdout);
+        return true;
+    }
+#endif
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);

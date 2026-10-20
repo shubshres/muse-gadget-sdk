@@ -88,6 +88,9 @@ static char s_join_ssid[MUSE_SSID_MAX + 1];
 
 /* Hatch page. */
 static lv_obj_t *s_hatch_status, *s_hatch_host, *s_hatch_vm, *s_hatch_token, *s_hatch_sdk_token;
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+static lv_obj_t *s_azure_region, *s_azure_key;
+#endif
 static lv_obj_t *s_link_status, *s_link_reset_lbl;
 static int64_t s_link_reset_armed_us;
 static int64_t s_sdk_token_bad_us;   /* when an invalid SDK token was entered */
@@ -849,6 +852,30 @@ static void on_hatch_token_done(const char *text)
     }
 }
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+static void on_azure_region_done(const char *text) { muse_settings_set_azure_region(text); }
+static void on_azure_key_done(const char *text)
+{
+    if (text[0]) muse_settings_set_azure_key(text);
+}
+
+static void on_azure_region(lv_event_t *e)
+{
+    (void)e;
+    char region[MUSE_AZURE_REGION_MAX + 1], key[MUSE_AZURE_KEY_MAX + 1];
+    muse_settings_azure_tts(region, key);
+    open_text("Azure region", region, false, MUSE_AZURE_REGION_MAX, "For example, eastus",
+              on_azure_region_done, s_hatch);
+}
+
+static void on_azure_key(lv_event_t *e)
+{
+    (void)e;
+    open_text("Azure Speech key", "", true, MUSE_AZURE_KEY_MAX, "Empty keeps current key",
+              on_azure_key_done, s_hatch);
+}
+#endif
+
 /* A valid token is stored and the device restarts to use it. */
 static void on_hatch_sdk_token_done(const char *text)
 {
@@ -918,6 +945,10 @@ static void build_hatch_page(lv_obj_t *tile)
     row(list, NULL, "VM ID", &s_hatch_vm, on_hatch_vm, NULL);
     row(list, NULL, "Device token", &s_hatch_token, on_hatch_token, NULL);
     row(list, NULL, "SDK token", &s_hatch_sdk_token, on_hatch_sdk_token, NULL);
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+    row(list, NULL, "Azure region", &s_azure_region, on_azure_region, NULL);
+    row(list, NULL, "Azure Speech key", &s_azure_key, on_azure_key, NULL);
+#endif
     button(list, "Test connection", COLOR_ACCENT, on_hatch_test, NULL);
     note(list, "Pair with the Muse app to use your account; a device token here overrides it, and a long one is "
                "easier to send over Bluetooth. The VM ID picks one of your VMs. The SDK token is from "
@@ -960,6 +991,12 @@ static void tick_hatch(void)
      * (muse_link_hatch_linked); one typed in here overrides it. */
     set_text(s_hatch_token, muse_settings_hatch_token_len() ? "Set here" :
                             muse_link_hatch_linked() ? "Set" : "Not set");
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+    char azure_region[MUSE_AZURE_REGION_MAX + 1], azure_key[MUSE_AZURE_KEY_MAX + 1];
+    muse_settings_azure_tts(azure_region, azure_key);
+    set_text(s_azure_region, azure_region[0] ? azure_region : "Not set");
+    set_text(s_azure_key, azure_key[0] ? "Set" : "Not set");
+#endif
     /* The hint gadgets.muse.ai shows. */
     const char *sdk = muse_link_sdk_token();
     if (sdk) {
