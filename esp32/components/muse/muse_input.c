@@ -561,7 +561,9 @@ static void input_task(void *arg)
         if (muse_board->poll_motion) {
             muse_mode_t mode = muse_state_mode(NULL);
             unsigned motion = muse_board->poll_motion(muse_state_asleep(),
-                                                      mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING);
+                                                      mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING,
+                                                      muse_settings_motion_wake(),
+                                                      muse_settings_motion_silence());
             if (motion & MUSE_MOTION_WAKE) {
                 set_asleep(false, "tilt");
                 muse_state_poke();

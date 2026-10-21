@@ -99,7 +99,7 @@ static esp_err_t imu_init(void)
     return ESP_OK;
 }
 
-static unsigned poll_motion(bool asleep, bool replying)
+static unsigned poll_motion(bool asleep, bool replying, bool wake_enabled, bool silence_enabled)
 {
     static int64_t last_poll_us;
     if (!s_imu) return 0;
@@ -113,7 +113,8 @@ static unsigned poll_motion(bool asleep, bool replying)
         .y = (int16_t)((uint16_t)data[2] | (uint16_t)data[3] << 8),
         .z = (int16_t)((uint16_t)data[4] | (uint16_t)data[5] << 8),
     };
-    return muse_motion_update(&s_motion, sample, asleep, replying, (uint32_t)(now_us / 1000));
+    return muse_motion_update(&s_motion, sample, asleep, replying, wake_enabled, silence_enabled,
+                              (uint32_t)(now_us / 1000));
 }
 #endif
 

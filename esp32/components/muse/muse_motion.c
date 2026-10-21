@@ -31,7 +31,8 @@ static int64_t dot(muse_motion_sample_t a, muse_motion_sample_t b)
 }
 
 unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
-                            bool asleep, bool replying, uint32_t now_ms)
+                            bool asleep, bool replying, bool wake_enabled, bool silence_enabled,
+                            uint32_t now_ms)
 {
     unsigned events = 0;
     if (!steady_gravity(v)) {
@@ -42,18 +43,30 @@ unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
     if (asleep != g->was_asleep) {
         g->was_asleep = asleep;
         g->sleep_pose = v;
-        g->wake_armed = asleep;
+        g->wake_armed = asleep && wake_enabled;
+        g->wake_since_ms = 0;
+    }
+    if (wake_enabled != g->was_wake_enabled) {
+        g->was_wake_enabled = wake_enabled;
+        g->sleep_pose = v;
+        g->wake_armed = asleep && wake_enabled;
         g->wake_since_ms = 0;
     }
     if (replying != g->was_replying) {
         g->was_replying = replying;
         g->reply_pose = v;
-        g->silence_armed = replying;
+        g->silence_armed = replying && silence_enabled;
+        g->silence_since_ms = 0;
+    }
+    if (silence_enabled != g->was_silence_enabled) {
+        g->was_silence_enabled = silence_enabled;
+        g->reply_pose = v;
+        g->silence_armed = replying && silence_enabled;
         g->silence_since_ms = 0;
     }
 
     /* A deliberate ~50-degree change from the pose at sleep, held 250 ms. */
-    if (asleep && g->wake_armed && dot(g->sleep_pose, v) < ONE_G_SQUARED * 64 / 100) {
+    if (asleep && wake_enabled && g->wake_armed && dot(g->sleep_pose, v) < ONE_G_SQUARED * 64 / 100) {
         if (!g->wake_since_ms) g->wake_since_ms = now_ms ? now_ms : 1;
         if (now_ms - g->wake_since_ms >= 250) {
             g->wake_armed = false;
@@ -64,7 +77,7 @@ unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
     }
 
     /* Turning the face over during a reply: >120 degrees, held 450 ms. */
-    if (replying && g->silence_armed && dot(g->reply_pose, v) < -ONE_G_SQUARED / 2) {
+    if (replying && silence_enabled && g->silence_armed && dot(g->reply_pose, v) < -ONE_G_SQUARED / 2) {
         if (!g->silence_since_ms) g->silence_since_ms = now_ms ? now_ms : 1;
         if (now_ms - g->silence_since_ms >= 450) {
             g->silence_armed = false;

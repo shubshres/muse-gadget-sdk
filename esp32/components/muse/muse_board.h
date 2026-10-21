@@ -132,7 +132,7 @@ typedef struct {
     unsigned (*poll_buttons)(void);
     /* Optional accelerometer gestures; polled from the input task even with
      * the display paused. Returns MUSE_MOTION_* events from muse_motion.h. */
-    unsigned (*poll_motion)(bool asleep, bool replying);
+    unsigned (*poll_motion)(bool asleep, bool replying, bool wake_enabled, bool silence_enabled);
     /* Display paused: returns once a button changes (waking the chip from
      * light sleep), the task is notified or timeout_ms passes, so the
      * buttons needn't be polled. NULL: polled. */

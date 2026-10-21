@@ -71,6 +71,7 @@ static const char *TAG = "muse_voice";
 
 static QueueHandle_t s_queue;
 static atomic_bool s_cancel_response;
+static atomic_bool s_pause_response;
 static atomic_bool s_replay_request;
 static atomic_bool s_replaying;
 static atomic_bool s_last_available;
@@ -136,7 +137,15 @@ static void save_last_answer(int16_t *pcm, size_t frames)
 void muse_voice_cancel_response(void)
 {
     atomic_store(&s_replay_request, false);
+    atomic_store(&s_pause_response, false);
     atomic_store(&s_cancel_response, true);
+}
+
+void muse_voice_toggle_pause(void)
+{
+    if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING) {
+        atomic_store(&s_pause_response, !atomic_load(&s_pause_response));
+    }
 }
 
 static volatile bool s_monitor;
@@ -409,6 +418,7 @@ static void go_idle(const char *caption);
  */
 static bool hatch_reply(bool *delivered)
 {
+    atomic_store(&s_pause_response, false);
     muse_state_set_mode(MUSE_MODE_THINKING);
     muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
     static int16_t buf[MUSE_AUDIO_CHUNK];
@@ -416,6 +426,7 @@ static bool hatch_reply(bool *delivered)
     char text[96];
     static char page[MUSE_CAPTION_MAX];
     bool done = false, speaking = false, replied = false;
+    bool pause_caption = false;
     size_t played = 0;
     int16_t *replay_pcm = NULL;
     size_t replay_frames = 0, replay_capacity = 0;
@@ -473,6 +484,23 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(0);
             free(replay_pcm);
             return true;
+        }
+        if (atomic_load(&s_pause_response)) {
+            muse_state_set_level(0);
+            if (!pause_caption) {
+                muse_state_set_caption("PAUSED - TAP MUSE TO RESUME");
+                pause_caption = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;   /* leave streamed audio in Hatch's buffer until resumed */
+        }
+        if (pause_caption) {
+            pause_caption = false;
+            if (muse_hatch_turn_caption(played, page, sizeof(page))) {
+                muse_state_set_caption("%s", page);
+            } else {
+                muse_state_set_caption("SPEAKING");
+            }
         }
         size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
         if (atomic_load(&s_cancel_response)) continue;
@@ -920,25 +948,42 @@ static bool replay_last_audio(void)
 {
     if (!s_last_pcm || !s_last_frames || !muse_settings_speaker_on()) return false;
     atomic_store(&s_replaying, true);
+    atomic_store(&s_pause_response, false);
     atomic_store(&s_cancel_response, false);
     muse_state_set_mode(MUSE_MODE_SPEAKING);
     muse_state_set_caption("REPLAYING LAST ANSWER");
     bool pressed = false;
-    for (size_t i = 0; i < s_last_frames; i += MUSE_AUDIO_CHUNK) {
+    bool pause_caption = false;
+    for (size_t i = 0; i < s_last_frames;) {
         if (atomic_exchange(&s_cancel_response, false)) break;
         if (got_event(MUSE_PTT_DOWN)) {
             pressed = true;
             break;
         }
+        if (atomic_load(&s_pause_response)) {
+            muse_state_set_level(0);
+            if (!pause_caption) {
+                muse_state_set_caption("PAUSED - TAP MUSE TO RESUME");
+                pause_caption = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (pause_caption) {
+            pause_caption = false;
+            muse_state_set_caption("REPLAYING LAST ANSWER");
+        }
         size_t n = s_last_frames - i;
         if (n > MUSE_AUDIO_CHUNK) n = MUSE_AUDIO_CHUNK;
         muse_state_set_level(muse_audio_level(s_last_pcm + i, n));
         muse_audio_write(s_last_pcm + i, n);
+        i += n;
     }
     muse_state_set_level(0);
     pre_reset();
     go_idle("");
     atomic_store(&s_replaying, false);
+    atomic_store(&s_pause_response, false);
     return pressed;
 }
 

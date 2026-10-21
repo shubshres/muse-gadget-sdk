@@ -69,12 +69,14 @@ The experimental [OSTB EchoEar-2ST port](ostb-echoear-2st.md) targets the
 measured 16 MB flash / 8 MB PSRAM unit. Its hardware and validation limits
 are documented separately; this is not a generic ESP-VoCat profile.
 
-On the Waveshare ESP32-S3-Touch-AMOLED-1.75C, tilting the board about 50°
-from the position where it went to sleep wakes the screen. Turning it over
-while Muse is thinking or speaking silences that reply. Hold either gesture
-briefly; the first responds after 250 ms and the second after 450 ms. The
-accelerometer must be present; the physical buttons continue to work if it
-isn't. These motion controls do not apply to the separate 1.75 model.
+On the Waveshare ESP32-S3-Touch-AMOLED-1.75C, the Auto-sleep settings page
+has independent toggles for Raise to wake and Turn over to silence. Raise the
+board about 50° from the position where it went to sleep to wake the screen;
+turn it over while Muse is thinking or speaking to silence that reply. Tap
+Muse's avatar while it is speaking to pause playback, then tap again to
+resume. The accelerometer must be present for the motion controls; the
+physical buttons continue to work if it isn't. These controls do not apply to
+the separate 1.75 model.
 
 ## Features
 

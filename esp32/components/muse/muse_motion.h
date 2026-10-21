@@ -30,9 +30,11 @@ typedef struct {
     muse_motion_sample_t sleep_pose, reply_pose;
     uint32_t wake_since_ms, silence_since_ms;
     bool was_asleep, was_replying;
+    bool was_wake_enabled, was_silence_enabled;
     bool wake_armed, silence_armed;
 } muse_motion_gesture_t;
 
 /* Call with each fresh accelerometer sample. Time is monotonic milliseconds. */
 unsigned muse_motion_update(muse_motion_gesture_t *gesture, muse_motion_sample_t sample,
-                            bool asleep, bool replying, uint32_t now_ms);
+                            bool asleep, bool replying, bool wake_enabled, bool silence_enabled,
+                            uint32_t now_ms);

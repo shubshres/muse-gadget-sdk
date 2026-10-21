@@ -44,6 +44,8 @@ typedef enum {
     MUSE_SETTING_MIC_GAIN,
     MUSE_SETTING_BRIGHTNESS,
     MUSE_SETTING_SLEEP,
+    MUSE_SETTING_MOTION_WAKE,
+    MUSE_SETTING_MOTION_SILENCE,
     MUSE_SETTING_WIFI,          /* on/off or credentials */
     MUSE_SETTING_BLE,
     MUSE_SETTING_HATCH,
@@ -59,6 +61,8 @@ bool muse_settings_speaker_on(void);    /* off: replies are shown, not played */
 int muse_settings_mic_gain(void);       /* dB, 0..MUSE_MIC_GAIN_MAX */
 int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
+bool muse_settings_motion_wake(void);
+bool muse_settings_motion_silence(void);
 bool muse_settings_wifi_on(void);
 bool muse_settings_ble_on(void);
 
@@ -76,6 +80,8 @@ void muse_settings_set_speaker_on(bool on);
 void muse_settings_set_mic_gain(int db);
 void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
+void muse_settings_set_motion_wake(bool on);
+void muse_settings_set_motion_silence(bool on);
 void muse_settings_set_wifi_on(bool on);
 void muse_settings_set_ble_on(bool on);
 /* A network name is remembered first among the saved ones and joined now;

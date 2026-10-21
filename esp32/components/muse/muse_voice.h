@@ -54,6 +54,8 @@ bool muse_voice_notes_waiting(void);
 
 /* Stop the reply currently being prepared or played (called from the LVGL task). */
 void muse_voice_cancel_response(void);
+/* Tap the Muse avatar to pause or resume the current spoken reply. */
+void muse_voice_toggle_pause(void);
 
 /* The most recent completed reply. Text is copied into out; speech replay is
  * available when it fit in the board's memory. */

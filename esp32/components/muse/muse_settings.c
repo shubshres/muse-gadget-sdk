@@ -37,6 +37,8 @@ static struct {
     uint8_t mic_gain;
     uint8_t brightness;
     uint16_t sleep_s;
+    bool motion_wake;
+    bool motion_silence;
     bool wifi_on;
     bool ble_on;
     char ssid[MUSE_SSID_MAX + 1];
@@ -52,6 +54,8 @@ static struct {
     .mic_gain = 30,
     .brightness = 100,
     .sleep_s = 120,
+    .motion_wake = true,
+    .motion_silence = true,
     .wifi_on = true,
     .host = DEFAULT_HOST,
     .azure_region = "eastus",
@@ -124,6 +128,8 @@ esp_err_t muse_settings_init(void)
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
+    if (nvs_get_u8(s_nvs, "motion_wake", &b) == ESP_OK) s.motion_wake = b;
+    if (nvs_get_u8(s_nvs, "motion_silence", &b) == ESP_OK) s.motion_silence = b;
     if (nvs_get_u8(s_nvs, "wifi_on", &b) == ESP_OK) {
         s.wifi_on = b;
     }
@@ -157,6 +163,8 @@ bool muse_settings_speaker_on(void) { return s.speaker_on; }
 int muse_settings_mic_gain(void) { return s.mic_gain; }
 int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
+bool muse_settings_motion_wake(void) { return s.motion_wake; }
+bool muse_settings_motion_silence(void) { return s.motion_silence; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
 bool muse_settings_ble_on(void) { return s.ble_on; }
 
@@ -246,6 +254,20 @@ void muse_settings_set_sleep_s(int secs)
     nvs_set_u16(s_nvs, "sleep_s", s.sleep_s);
     nvs_commit(s_nvs);
     notify(MUSE_SETTING_SLEEP);
+}
+
+void muse_settings_set_motion_wake(bool on)
+{
+    s.motion_wake = on;
+    save_u8("motion_wake", on);
+    notify(MUSE_SETTING_MOTION_WAKE);
+}
+
+void muse_settings_set_motion_silence(bool on)
+{
+    s.motion_silence = on;
+    save_u8("motion_silence", on);
+    notify(MUSE_SETTING_MOTION_SILENCE);
 }
 
 void muse_settings_set_wifi_on(bool on)

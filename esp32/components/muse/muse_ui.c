@@ -502,7 +502,11 @@ static void build_button_icons(lv_obj_t *face)
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
-    muse_state_make_happy();
+    if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING) {
+        muse_voice_toggle_pause();
+    } else {
+        muse_state_make_happy();
+    }
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -868,7 +872,7 @@ static void build_answer(lv_obj_t *face, int ring_in)
 
     if (muse_board->touch && !muse_board->rim_controls) {
         build_speaker(face, spk_x, spk_y);
-        build_replay(face, s_small ? s_w / 2 - 28 : -spk_x,
+        build_replay(face, s_small ? -s_w / 2 + 28 : spk_x,
                      s_small ? s_h / 2 - 28 : -spk_y);
     }
 
