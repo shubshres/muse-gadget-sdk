@@ -26,6 +26,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
@@ -70,9 +71,71 @@ static const char *TAG = "muse_voice";
 
 static QueueHandle_t s_queue;
 static atomic_bool s_cancel_response;
+static atomic_bool s_replay_request;
+static atomic_bool s_replaying;
+static atomic_bool s_last_available;
+static SemaphoreHandle_t s_last_lock;
+static char *s_last_text;
+static int16_t *s_last_pcm;   /* used and replaced only by the voice task */
+static size_t s_last_frames;
+
+#define REPLAY_MAX_FRAMES (MUSE_AUDIO_RATE * 45)
+#define REPLAY_GROW_FRAMES (MUSE_AUDIO_RATE * 2)
+
+bool muse_voice_has_last_answer(void)
+{
+    return atomic_load(&s_last_available);
+}
+
+size_t muse_voice_copy_last_answer(char *out, size_t cap)
+{
+    if (!out || !cap || !s_last_lock) return 0;
+    xSemaphoreTake(s_last_lock, portMAX_DELAY);
+    strlcpy(out, s_last_text ? s_last_text : "", cap);
+    size_t n = strlen(out);
+    xSemaphoreGive(s_last_lock);
+    return n;
+}
+
+bool muse_voice_replay_last(void)
+{
+    if (!muse_voice_has_last_answer() || atomic_load(&s_replaying)) return false;
+    atomic_store(&s_replay_request, true);
+    muse_state_nudge();
+    return true;
+}
+
+bool muse_voice_replaying(void)
+{
+    return atomic_load(&s_replaying);
+}
+
+static void save_last_answer(int16_t *pcm, size_t frames)
+{
+    size_t cap = MUSE_LOW_MEM ? 1024 : MUSE_REPLAY_TEXT_CAP;
+    char *text = heap_caps_malloc(cap, MUSE_BIG_CAPS);
+    if (!text) {
+        free(pcm);
+        return;
+    }
+    if (!muse_hatch_turn_reply_text(text, cap)) {
+        free(text);
+        free(pcm);
+        return;
+    }
+    xSemaphoreTake(s_last_lock, portMAX_DELAY);
+    free(s_last_text);
+    free(s_last_pcm);
+    s_last_text = text;
+    s_last_pcm = pcm;
+    s_last_frames = frames;
+    atomic_store(&s_last_available, true);
+    xSemaphoreGive(s_last_lock);
+}
 
 void muse_voice_cancel_response(void)
 {
+    atomic_store(&s_replay_request, false);
     atomic_store(&s_cancel_response, true);
 }
 
@@ -354,6 +417,9 @@ static bool hatch_reply(bool *delivered)
     static char page[MUSE_CAPTION_MAX];
     bool done = false, speaking = false, replied = false;
     size_t played = 0;
+    int16_t *replay_pcm = NULL;
+    size_t replay_frames = 0, replay_capacity = 0;
+    bool replay_overflow = false;
     int64_t t0 = esp_timer_get_time();
     *delivered = false;
     for (;;) {
@@ -363,6 +429,7 @@ static bool hatch_reply(bool *delivered)
             *delivered = true;   /* an intentional stop must not resend a saved note */
             muse_state_set_level(0);
             go_idle("STOPPED");
+            free(replay_pcm);
             return false;
         }
         muse_hatch_ev_t ev;
@@ -394,6 +461,7 @@ static bool hatch_reply(bool *delivered)
                 ESP_LOGW(TAG, "muse: %s", text);
                 muse_state_set_level(0);
                 go_idle(text);
+                free(replay_pcm);
                 return false;
             default:
                 break;
@@ -403,6 +471,7 @@ static bool hatch_reply(bool *delivered)
             ESP_LOGI(TAG, "reply interrupted");
             muse_hatch_turn_cancel();
             muse_state_set_level(0);
+            free(replay_pcm);
             return true;
         }
         size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
@@ -416,6 +485,30 @@ static bool hatch_reply(bool *delivered)
             muse_state_set_level(muse_audio_level(buf, n));
             muse_audio_write(buf, n);
             played += n;
+#if !MUSE_LOW_MEM
+            if (!replay_overflow) {
+                if (replay_frames + n > REPLAY_MAX_FRAMES) {
+                    replay_overflow = true;
+                } else if (replay_frames + n > replay_capacity) {
+                    size_t next = replay_capacity + REPLAY_GROW_FRAMES;
+                    int16_t *larger = heap_caps_realloc(replay_pcm, next * sizeof(int16_t), MUSE_BIG_CAPS);
+                    if (!larger) replay_overflow = true;
+                    else {
+                        replay_pcm = larger;
+                        replay_capacity = next;
+                    }
+                }
+                if (!replay_overflow) {
+                    memcpy(replay_pcm + replay_frames, buf, n * sizeof(int16_t));
+                    replay_frames += n;
+                }
+                if (replay_overflow) {
+                    free(replay_pcm);
+                    replay_pcm = NULL;
+                    replay_frames = 0;
+                }
+            }
+#endif
         } else if (done) {
             break;
         } else if (speaking) {
@@ -440,8 +533,11 @@ static bool hatch_reply(bool *delivered)
             muse_hatch_turn_cancel();
             *delivered = true;
             go_idle("STOPPED");
+            free(replay_pcm);
+            return false;
         }
     }
+    save_last_answer(replay_pcm, replay_frames);
     return false;
 }
 
@@ -819,6 +915,33 @@ static bool can_record(void)
     return true;
 }
 
+/* Reuse the local PCM, without asking Hatch to make another turn. */
+static bool replay_last_audio(void)
+{
+    if (!s_last_pcm || !s_last_frames || !muse_settings_speaker_on()) return false;
+    atomic_store(&s_replaying, true);
+    atomic_store(&s_cancel_response, false);
+    muse_state_set_mode(MUSE_MODE_SPEAKING);
+    muse_state_set_caption("REPLAYING LAST ANSWER");
+    bool pressed = false;
+    for (size_t i = 0; i < s_last_frames; i += MUSE_AUDIO_CHUNK) {
+        if (atomic_exchange(&s_cancel_response, false)) break;
+        if (got_event(MUSE_PTT_DOWN)) {
+            pressed = true;
+            break;
+        }
+        size_t n = s_last_frames - i;
+        if (n > MUSE_AUDIO_CHUNK) n = MUSE_AUDIO_CHUNK;
+        muse_state_set_level(muse_audio_level(s_last_pcm + i, n));
+        muse_audio_write(s_last_pcm + i, n);
+    }
+    muse_state_set_level(0);
+    pre_reset();
+    go_idle("");
+    atomic_store(&s_replaying, false);
+    return pressed;
+}
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
@@ -847,6 +970,10 @@ static void voice_task(void *arg)
             }
 #endif
             set_resting(rest);
+            if (!rest && atomic_exchange(&s_replay_request, false)) {
+                pending_down = replay_last_audio();
+                continue;
+            }
             /* On battery Wi-Fi rests with the codecs, and between turns dozes
              * between beacons as xiaozhi's idle does; a press wakes it fully. */
             muse_wifi_power(rest ? MUSE_WIFI_REST : battery ? MUSE_WIFI_DOZE : MUSE_WIFI_FULL);
@@ -934,8 +1061,9 @@ static void voice_task(void *arg)
 esp_err_t muse_voice_start(QueueHandle_t queue)
 {
     s_queue = queue;
+    s_last_lock = xSemaphoreCreateMutex();
     s_pre = heap_caps_malloc(PRE_CHUNKS * sizeof(pre_chunk_t), MUSE_BIG_CAPS);
-    if (!s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
+    if (!s_last_lock || !s_pre || muse_audio_init(muse_settings_volume(), muse_settings_mic_gain()) != ESP_OK) {
         muse_state_set_mode(MUSE_MODE_ERROR);
         muse_state_set_caption("AUDIO INIT FAILED");
         return ESP_FAIL;

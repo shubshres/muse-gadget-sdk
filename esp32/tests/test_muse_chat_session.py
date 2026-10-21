@@ -25,6 +25,8 @@ class ChatSession(unittest.TestCase):
         types = source[source.index('enum phase_t'):source.index('/* 10 KB')]
         handlers = source[source.index('static int find_msg('):source.index('static void on_chat_ack(')]
         reset = source[source.index('static bool turn_start('):source.index('static void turn_begin(')]
+        reply_text = source[source.index('extern "C" size_t muse_hatch_turn_reply_text('):
+                            source.index('extern "C" size_t muse_hatch_turn_read(')]
         code = r'''
 #include <cassert>
 #include <cstdint>
@@ -58,7 +60,7 @@ static void turn_fail(const char *) { turn_finish(); }
 static bool ensure_connected() { return true; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
-''' + reset + handlers + r'''
+''' + reset + handlers + reply_text + r'''
 static void begin(bool typed = false) {
     assert(turn_start(s_turn.gen + 1, typed));
     s_turn.phase = P_WAIT_REPLY;
@@ -128,12 +130,23 @@ static void bounded_rejections() {
     event("message.assistant", "second", "note", "Second");
     assert(s_turn.nmsgs == 2 && s_turn.msgs[0].done && s_turn.msgs[1].done);
 }
+static void replay_text() {
+    begin();
+    event("message.assistant", "first", "note", "First answer");
+    event("message.assistant", "second", "note", "Second answer");
+    char text[128];
+    assert(muse_hatch_turn_reply_text(text, sizeof(text)) == strlen("First answer\n\nSecond answer"));
+    assert(strcmp(text, "First answer\n\nSecond answer") == 0);
+    assert(muse_hatch_turn_reply_text(text, 8) == 7);
+    assert(strcmp(text, "First a") == 0);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
     case 0: rejected_deltas(); break;
     case 1: valid_parents(); break;
     case 2: bounded_rejections(); break;
+    case 3: replay_text(); break;
     default: return 2;
     }
 }
@@ -166,3 +179,6 @@ int main(int argc, char **argv) {
 
     def test_rejection_capacity_preserves_correlation(self):
         self.run_case(2)
+
+    def test_replay_assembles_full_completed_reply(self):
+        self.run_case(3)

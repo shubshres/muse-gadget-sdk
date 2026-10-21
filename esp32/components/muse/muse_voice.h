@@ -17,6 +17,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -53,3 +54,11 @@ bool muse_voice_notes_waiting(void);
 
 /* Stop the reply currently being prepared or played (called from the LVGL task). */
 void muse_voice_cancel_response(void);
+
+/* The most recent completed reply. Text is copied into out; speech replay is
+ * available when it fit in the board's memory. */
+#define MUSE_REPLAY_TEXT_CAP 8256
+bool muse_voice_has_last_answer(void);
+size_t muse_voice_copy_last_answer(char *out, size_t cap);
+bool muse_voice_replay_last(void);
+bool muse_voice_replaying(void);
