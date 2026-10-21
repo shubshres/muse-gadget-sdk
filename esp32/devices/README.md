@@ -69,6 +69,13 @@ The experimental [OSTB EchoEar-2ST port](ostb-echoear-2st.md) targets the
 measured 16 MB flash / 8 MB PSRAM unit. Its hardware and validation limits
 are documented separately; this is not a generic ESP-VoCat profile.
 
+On the Waveshare ESP32-S3-Touch-AMOLED-1.75C, tilting the board about 50°
+from the position where it went to sleep wakes the screen. Turning it over
+while Muse is thinking or speaking silences that reply. Hold either gesture
+briefly; the first responds after 250 ms and the second after 450 ms. The
+accelerometer must be present; the physical buttons continue to work if it
+isn't. These motion controls do not apply to the separate 1.75 model.
+
 ## Features
 
 |  | DevKitC-1 | C6 devkit | ideaspark | Waveshare C6 LCD 1.47 | SenseCAP Indicator | Waveshare S3 ePaper 1.54 | reTerminal E1001 | reTerminal E1002 | reTerminal Sticky* | HA Voice PE | reSpeaker Lite (experimental) | Waveshare S3 1.75C | Waveshare S3 1.75 | Waveshare S3 1.85C | Waveshare S3 2.16 | AIPI Lite | Waveshare C6 1.8 | Waveshare C6 2.06 | Watcher | StickS3 | StickC Plus2 | Cardputer ADV | BOX-3 | StopWatch | CoreS3 | Core2 | FNK0104B | S3 DevKitC-1 | JC3248W535 | VN S3 1.83-inch | Waveshare LCD7 | Waveshare LCD 1.28 | AI Passport | EchoEar-2ST* |
