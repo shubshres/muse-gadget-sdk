@@ -78,6 +78,15 @@ static esp_err_t init(void)
         ESP_LOGW(TAG, "PMU unavailable (%s): battery status disabled", esp_err_to_name(err));
         return ESP_OK;
     }
+#if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    /* On the 1.75C, PWR is push-to-talk. The PMU otherwise cuts power after
+     * a 10 s hold, before the 15 s recording limit. BOOT still powers off
+     * through muse_pmu_power_off() when held. */
+    err = muse_pmu_set_key_shutdown(false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "couldn't disable PWR key shutdown (%s)", esp_err_to_name(err));
+    }
+#endif
     /* Only DCDC1 (VCC3V3) and ALDO1 (A3V3, for the codecs) feed anything; the
      * schematic leaves the rest unconnected. Waveshare's AXP2101 example and
      * xiaozhi's board turn them off too. */

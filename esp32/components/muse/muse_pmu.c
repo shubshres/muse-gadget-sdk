@@ -26,6 +26,7 @@ static const char *TAG = "muse_pmu";
 #define REG_STATUS1 0x00        /* bit5 VBUS good, bit3 battery present */
 #define REG_STATUS2 0x01        /* bits[6:5] 01 = charging */
 #define REG_COMMON_CFG 0x10     /* bit0 = soft power-off */
+#define REG_PWROFF_EN 0x22      /* bit1 = PWRON held past OFFLEVEL cuts power */
 #define REG_IRQ_LEVEL 0x27      /* bits[3:2] power-key hold-to-off time */
 #define REG_ADC_ENABLE 0x30     /* bit0 = battery voltage */
 #define REG_VBAT_H 0x34         /* bits[4:0]; 1 mV per count with REG_VBAT_L */
@@ -46,9 +47,9 @@ static const char *TAG = "muse_pmu";
 #define PKEY_SHORT (1u << 3)
 #define PKEY_ALL (PKEY_POS_EDGE | PKEY_NEG_EDGE | PKEY_LONG | PKEY_SHORT)
 
-/* bits[3:2] = 11 -> 10 s: longer than the 8 s talk limit, and a hardware
- * fallback if the firmware is wedged. */
+/* bits[3:2] = 11 -> 10 s for boards that keep hardware key shutdown enabled. */
 #define PKEY_OFF_10S (3u << 2)
+#define PKEY_SHUTDOWN_ENABLE (1u << 1)
 
 static i2c_master_dev_handle_t s_dev;
 
@@ -98,6 +99,17 @@ esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs)
     ESP_RETURN_ON_ERROR(wr(REG_ADC_ENABLE, v | 0x01), TAG, "enable battery voltage");
 
     ESP_LOGI(TAG, "AXP2101 ready (hardware PWR hold-off 10 s)");
+    return ESP_OK;
+}
+
+esp_err_t muse_pmu_set_key_shutdown(bool enable)
+{
+    ESP_RETURN_ON_FALSE(s_dev, ESP_ERR_INVALID_STATE, TAG, "no PMU");
+    uint8_t v;
+    ESP_RETURN_ON_ERROR(rd(REG_PWROFF_EN, &v), TAG, "read key shutdown");
+    uint8_t next = enable ? v | PKEY_SHUTDOWN_ENABLE : v & ~PKEY_SHUTDOWN_ENABLE;
+    ESP_RETURN_ON_ERROR(wr(REG_PWROFF_EN, next), TAG, "set key shutdown");
+    ESP_LOGI(TAG, "hardware PWR key shutdown %s", enable ? "enabled" : "disabled");
     return ESP_OK;
 }
 
