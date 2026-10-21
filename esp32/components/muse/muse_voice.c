@@ -17,6 +17,7 @@
 #include "muse_voice.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -68,6 +69,13 @@ static const char *TAG = "muse_voice";
 #define ACK_WAIT_US (30LL * 1000000)            /* asleep, waiting for the VM to have a note */
 
 static QueueHandle_t s_queue;
+static atomic_bool s_cancel_response;
+
+void muse_voice_cancel_response(void)
+{
+    atomic_store(&s_cancel_response, true);
+}
+
 static volatile bool s_monitor;
 static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
@@ -243,10 +251,9 @@ static void take(rec_stats_t *st, const int16_t *pcm)
  * gets the part after the press. It streams to Hatch as it goes if it can.
  * If not, the note is kept in s_rec to send later, and streams from partway
  * if Hatch comes within reach. Returns false if Hatch failed the turn with no
- * kept note to fall back on (why says what failed). There is no start chirp:
- * anything played now would land on top of the first words.
+ * kept note to fall back on (why says what failed).
  */
-static bool record(bool barge_in, size_t *held, char *why, size_t cap)
+static bool record(size_t *held, char *why, size_t cap)
 {
     muse_state_set_mode(MUSE_MODE_LISTENING);
     muse_state_set_progress(0);
@@ -262,17 +269,10 @@ static bool record(bool barge_in, size_t *held, char *why, size_t cap)
     rec_stats_t st = { 0 };
 
     size_t n = 0;
-    if (barge_in) {
-        /* Pressed during playback: the queued tail of the reply is still sounding. */
-        for (int i = 0; i < SETTLE_CHUNKS; i++) {
-            muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK);
-        }
-    } else {
-        for (size_t i = 0; i < s_pre_fill; i++) {
-            pre_get(i, s_chunk);
-            take(&st, s_chunk);
-            n += MUSE_AUDIO_CHUNK;
-        }
+    for (size_t i = 0; i < s_pre_fill; i++) {
+        pre_get(i, s_chunk);
+        take(&st, s_chunk);
+        n += MUSE_AUDIO_CHUNK;
     }
     size_t pre = n;
     bool released = false;
@@ -357,6 +357,14 @@ static bool hatch_reply(bool *delivered)
     int64_t t0 = esp_timer_get_time();
     *delivered = false;
     for (;;) {
+        if (atomic_exchange(&s_cancel_response, false)) {
+            ESP_LOGI(TAG, "reply stopped by screen gesture");
+            muse_hatch_turn_cancel();
+            *delivered = true;   /* an intentional stop must not resend a saved note */
+            muse_state_set_level(0);
+            go_idle("STOPPED");
+            return false;
+        }
         muse_hatch_ev_t ev;
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
             switch (ev) {
@@ -398,6 +406,7 @@ static bool hatch_reply(bool *delivered)
             return true;
         }
         size_t n = muse_hatch_turn_read(buf, MUSE_AUDIO_CHUNK, speaking || done ? 0 : 20);
+        if (atomic_load(&s_cancel_response)) continue;
         if (n) {
             if (!speaking) {
                 speaking = true;
@@ -424,7 +433,14 @@ static bool hatch_reply(bool *delivered)
              (esp_timer_get_time() - t0) / 1e6);
     if (!played) {
         /* No speech (TTS unavailable): leave the reply text up for a moment. */
-        vTaskDelay(pdMS_TO_TICKS(2500));
+        for (int i = 0; i < 25 && !atomic_load(&s_cancel_response); i++) {
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (atomic_exchange(&s_cancel_response, false)) {
+            muse_hatch_turn_cancel();
+            *delivered = true;
+            go_idle("STOPPED");
+        }
     }
     return false;
 }
@@ -565,6 +581,7 @@ typedef enum {
     FED,
     FEED_FAILED,    /* the turn failed, or Hatch stopped taking audio */
     FEED_PRESSED,   /* a press is queued: it goes first */
+    FEED_CANCELLED,
 } feed_t;
 
 /*
@@ -576,6 +593,7 @@ static feed_t feed_rest(const int16_t *pcm, size_t frames, size_t *sent, bool yi
     char text[96];
     int64_t moved = esp_timer_get_time();
     for (;;) {
+        if (atomic_load(&s_cancel_response)) return FEED_CANCELLED;
         muse_hatch_ev_t ev;
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
             if (ev == MUSE_HATCH_EV_ERROR) {
@@ -644,6 +662,13 @@ static bool send_held(bool quiet)
     muse_hatch_turn_begin();
     size_t sent = 0;
     feed_t fed = feed_rest(h->pcm, h->frames, &sent, true);
+    if (fed == FEED_CANCELLED) {
+        atomic_store(&s_cancel_response, false);
+        muse_hatch_turn_cancel();
+        drop_oldest();
+        if (!quiet) go_idle("STOPPED");
+        return false;
+    }
     bool delivered = false, interrupted = false;
     if (fed == FED && quiet) {
         delivered = wait_delivered();
@@ -729,7 +754,15 @@ static bool finish_note(void)
             /* Hatch is behind (still connecting, say): the rest from the kept note. */
             muse_state_set_mode(MUSE_MODE_THINKING);
             muse_state_set_caption("SENDING VOICE NOTE");
-            fed = feed_rest(s_rec, s_rec_n, &s_sent, false) == FED;
+            feed_t result = feed_rest(s_rec, s_rec_n, &s_sent, false);
+            if (result == FEED_CANCELLED) {
+                atomic_store(&s_cancel_response, false);
+                muse_hatch_turn_cancel();
+                drop_rec();
+                go_idle("STOPPED");
+                return false;
+            }
+            fed = result == FED;
             if (!fed) {
                 muse_hatch_turn_cancel();
             }
@@ -801,6 +834,7 @@ static void voice_task(void *arg)
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
             if (held_due() && !press_waiting()) {
+                atomic_store(&s_cancel_response, false);
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
                 pending_down = send_held(asleep);
@@ -858,13 +892,23 @@ static void voice_task(void *arg)
             continue;   /* a tap: it only woke Muse */
         }
         muse_wifi_power(MUSE_WIFI_FULL);
+        atomic_store(&s_cancel_response, false);
         if (!can_record()) {
             pending_down = false;
             continue;
         }
         size_t held;
         char why[96];
-        bool ok = record(pending_down, &held, why, sizeof(why));
+        /* The rising cue marks an accepted talk press. Drain its acoustic tail
+         * before capture so the note starts with the user's voice. */
+        muse_state_set_mode(MUSE_MODE_LISTENING);
+        muse_state_set_caption("LISTENING...");
+        muse_audio_chirp(1);
+        for (int i = 0; i < SETTLE_CHUNKS; i++) {
+            muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK);
+        }
+        pre_reset();
+        bool ok = record(&held, why, sizeof(why));
         pending_down = false;
         if (held < MIN_HELD_FRAMES && !wake) {
             muse_hatch_turn_cancel();

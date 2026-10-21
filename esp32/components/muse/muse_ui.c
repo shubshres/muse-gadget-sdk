@@ -45,6 +45,7 @@
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_wifi.h"
+#include "muse_voice.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
@@ -63,6 +64,8 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#define STOP_TAP_MS 250         /* ignore holds and swipes */
+#define STOP_TAP_GAP_MS 400     /* maximum gap between taps */
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -1097,6 +1100,46 @@ static void on_any_press(lv_event_t *e)
     muse_state_poke();
 }
 
+/* Input-device events see touches on the whole screen, including the avatar
+ * and reply text. Count short releases only while a reply is in progress. */
+static void on_response_tap(lv_event_t *e)
+{
+    static int64_t pressed_at, last_tap;
+    static int taps;
+    muse_mode_t mode = muse_state_mode(NULL);
+    if (muse_state_asleep() || (mode != MUSE_MODE_THINKING && mode != MUSE_MODE_SPEAKING)) {
+        taps = 0;
+        pressed_at = 0;
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_PRESSED:
+        pressed_at = now;
+        break;
+    case LV_EVENT_PRESS_LOST:
+        taps = 0;
+        pressed_at = 0;
+        break;
+    case LV_EVENT_RELEASED:
+        if (!pressed_at || now - pressed_at > STOP_TAP_MS * 1000LL) {
+            taps = 0;
+            pressed_at = 0;
+            break;
+        }
+        taps = last_tap && now - last_tap <= STOP_TAP_GAP_MS * 1000LL ? taps + 1 : 1;
+        last_tap = now;
+        pressed_at = 0;
+        if (taps == 3) {
+            taps = 0;
+            muse_voice_cancel_response();
+        }
+        break;
+    default:
+        break;
+    }
+}
+
 static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
                                    const char *symbol, uint32_t color)
 {
@@ -1222,6 +1265,7 @@ static void build_overlays(void)
 
     if (s_indev) {
         lv_indev_add_event_cb(s_indev, on_any_press, LV_EVENT_PRESSED, NULL);
+        lv_indev_add_event_cb(s_indev, on_response_tap, LV_EVENT_ALL, NULL);
     }
 }
 
