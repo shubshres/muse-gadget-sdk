@@ -869,7 +869,7 @@ static void build_answer(lv_obj_t *face, int ring_in)
     if (muse_board->touch && !muse_board->rim_controls) {
         build_speaker(face, spk_x, spk_y);
         build_replay(face, s_small ? s_w / 2 - 28 : -spk_x,
-                     s_small ? s_h / 2 - 28 : spk_y);
+                     s_small ? s_h / 2 - 28 : -spk_y);
     }
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
