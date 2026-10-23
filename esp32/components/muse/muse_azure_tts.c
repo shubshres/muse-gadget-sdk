@@ -60,7 +60,7 @@ static bool valid_region(const char *s)
 
 static char *ssml(const char *text)
 {
-    static const char prefix[] = "<speak version='1.0' xml:lang='en-US'><voice name='en-US-JennyNeural'>";
+    static const char prefix[] = "<speak version='1.0' xml:lang='en-US'><voice name='en-US-AvaMultilingualNeural'>";
     static const char suffix[] = "</voice></speak>";
     size_t n = strlen(text), cap = sizeof(prefix) + sizeof(suffix) + n * 6;
     char *out = malloc(cap);
