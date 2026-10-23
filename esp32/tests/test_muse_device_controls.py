@@ -31,7 +31,7 @@ class DeviceControls(unittest.TestCase):
             source.write_text(code)
             compiled = subprocess.run([
                 *shlex.split(os.environ.get('CC', 'cc')), '-std=gnu11',
-                '-Wall', '-Wextra', '-Werror', str(source), '-o', str(binary), '-lm',
+                '-Wall', '-Wextra', '-Werror', '-I', str(MUSE), str(source), '-o', str(binary), '-lm',
             ], capture_output=True, text=True)
             self.assertEqual(compiled.returncode, 0, compiled.stderr)
             for arg in args or ('',):
@@ -148,9 +148,9 @@ int main(void) {
 '''
         self.compile_run(code)
 
-    def test_recording_runs_for_a_minute_or_until_release(self):
+    def test_recording_runs_for_thirty_seconds_or_until_release(self):
         source = (MUSE / 'muse_voice.c').read_text()
-        constants = source[source.index('#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C\n#define MAX_SECS'):source.index('#define MIN_HELD_FRAMES')]
+        constants = source[source.index('#define MAX_SECS'):source.index('#define MIN_HELD_FRAMES')]
         stats = source[source.index('typedef struct {\n    double acc;'):source.index('/* Adds one captured chunk')]
         code = r'''
 #include <assert.h>
@@ -162,6 +162,7 @@ int main(void) {
 #include <string.h>
 #include <math.h>
 #define CONFIG_MUSE_BOARD_WAVESHARE_S3_175C 1
+#include "muse_voice_limits.h"
 #define MUSE_AUDIO_RATE 16000
 #define MUSE_AUDIO_CHUNK 320
 #define MUSE_MODE_LISTENING 1
@@ -210,7 +211,7 @@ int main(void) {
     char why[96]; size_t held;
     release_at = 0;
     assert(record(&held, why, sizeof(why)));
-    assert(held == MUSE_AUDIO_RATE * 60 && s_rec_n == held);
+    assert(held == MUSE_AUDIO_RATE * 30 && s_rec_n == held);
     reads = 0; release_at = 1000; /* release after twenty seconds */
     assert(record(&held, why, sizeof(why)));
     assert(held >= MUSE_AUDIO_RATE * 20);

@@ -40,6 +40,7 @@
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_wifi.h"
+#include "muse_voice_limits.h"
 
 static const char *TAG = "muse_voice";
 
@@ -134,11 +135,7 @@ static const char *const captions[] = {
 }
 
 
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
-#define MAX_SECS 60
-#else
-#define MAX_SECS 15
-#endif
+#define MAX_SECS MUSE_VOICE_RECORD_MAX_SECONDS
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */

@@ -155,6 +155,8 @@ static void worker(void *arg)
             snprintf(job->result.error, sizeof(job->result.error), "DIDN'T CATCH THAT");
         }
         cJSON_Delete(root);
+        free(job->wav);
+        job->wav = NULL;   /* the transcript replaces the recording before the model request */
     }
     if (job->response && job->prompt && !job->result.error[0]) {
         char url[256];
@@ -194,7 +196,8 @@ bool muse_model_init(void)
     return s_results && s_lock;
 }
 
-bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, const uint8_t *pcm, size_t bytes)
+static bool model_start(uint32_t id, muse_provider_t provider, const char *text,
+                        const uint8_t *pcm, size_t bytes, uint8_t *owned_wav)
 {
     if (!s_lock || !s_results || provider <= MUSE_PROVIDER_MUSE || provider >= MUSE_PROVIDER_COUNT ||
         (!text && (!pcm || bytes < 9600 || bytes > PCM_MAX || bytes % 2))) return false;
@@ -223,13 +226,14 @@ bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, c
         if (text) job->prompt = strdup(text);
         else {
             job->wav_len = bytes + MUSE_HATCH_WAV_HEADER;
-            job->wav = heap_caps_malloc(job->wav_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+            job->wav = owned_wav ? owned_wav :
+                heap_caps_malloc(job->wav_len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
             if (job->wav) {
                 muse_hatch_wav_header(job->wav, 16000);
                 uint32_t riff = bytes + 36, data = bytes;
                 memcpy(job->wav + 4, &riff, 4);
                 memcpy(job->wav + 40, &data, 4);
-                memcpy(job->wav + 44, pcm, bytes);
+                if (!owned_wav) memcpy(job->wav + 44, pcm, bytes);
             }
         }
         bool region_ok = job->region[0];
@@ -240,7 +244,9 @@ bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, c
              xTaskCreatePinnedToCoreWithCaps(worker, "muse_model", 16 * 1024, job, 4, NULL, 0,
                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
         if (!ok) {
-            free(job->prompt); free(job->wav); cJSON_Delete(job->history);
+            free(job->prompt);
+            if (job->wav != owned_wav) free(job->wav);
+            cJSON_Delete(job->history);
             memset(job, 0, sizeof(*job)); free(job);
         }
     }
@@ -248,6 +254,16 @@ bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, c
         xSemaphoreTake(s_lock, portMAX_DELAY); s_busy = false; xSemaphoreGive(s_lock);
     }
     return ok;
+}
+
+bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, const uint8_t *pcm, size_t bytes)
+{
+    return model_start(id, provider, text, pcm, bytes, NULL);
+}
+
+bool muse_model_start_voice(uint32_t id, muse_provider_t provider, uint8_t *wav, size_t bytes)
+{
+    return wav && model_start(id, provider, NULL, wav + MUSE_HATCH_WAV_HEADER, bytes, wav);
 }
 
 bool muse_model_poll(muse_model_result_t *out)

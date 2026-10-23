@@ -225,6 +225,7 @@ static void *heap_caps_calloc(size_t n, size_t size, int caps) { return calloc(n
 static void muse_hatch_wav_header(uint8_t *out, uint32_t rate) { memset(out,0,44); }
 ''' + state + r'''
 static job_t *active;
+static bool task_ok=true;
 static char selected_model[96]="model-a", selected_key[512]="key-a";
 void muse_settings_model(muse_provider_t p, char model[MUSE_MODEL_ID_MAX+1], char key[MUSE_MODEL_KEY_MAX+1]) {
     strcpy(model,selected_model); strcpy(key,selected_key);
@@ -234,6 +235,7 @@ void muse_settings_azure_tts(char region[MUSE_AZURE_REGION_MAX+1], char key[MUSE
 }
 static void worker(void *arg) {}
 static int xTaskCreatePinnedToCoreWithCaps(void (*fn)(void *), const char *name, int stack, void *arg, int priority, void *handle, int core, int caps) {
+    if (!task_ok) return 0;
     active=arg; return pdPASS;
 }
 ''' + start + r'''
@@ -263,10 +265,10 @@ int main(void) {
     muse_model_forget(); assert(!s_history.messages);
     /* Long recordings used to pass the session's cap, then fail this worker's
      * old 20-second guard and queue the same recording for endless retries. */
-    uint8_t *pcm = malloc(16000 * 2 * 61);
+    uint8_t *pcm = malloc(16000 * 2 * 31);
     assert(pcm);
-    for (size_t i=0; i<16000*2*61; i++) pcm[i]=(uint8_t)i;
-    for (int seconds=21; seconds<=60; seconds+=39) {
+    for (size_t i=0; i<16000*2*31; i++) pcm[i]=(uint8_t)i;
+    for (int seconds=21; seconds<=30; seconds+=9) {
         size_t bytes=16000*2*seconds;
         assert(muse_model_start(2,MUSE_PROVIDER_GEMINI,NULL,pcm,bytes));
         assert(active->provider==MUSE_PROVIDER_GEMINI);
@@ -278,8 +280,21 @@ int main(void) {
         assert(!muse_model_start(3,MUSE_PROVIDER_GEMINI,NULL,pcm,bytes)); /* busy */
         complete(false);
     }
-    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*61));
-    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*60-1));
+    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*31));
+    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*30-1));
+    /* Direct capture transfers its existing WAV allocation instead of making
+     * another whole-recording copy at the busiest point in the turn. */
+    size_t bytes=16000*2*30;
+    uint8_t *wav=malloc(bytes+44);
+    assert(wav); memcpy(wav+44,pcm,bytes);
+    task_ok=false;
+    assert(!muse_model_start_voice(5,MUSE_PROVIDER_GEMINI,wav,bytes));
+    assert(!memcmp(wav+44,pcm,bytes)); /* failure retains caller ownership */
+    task_ok=true;
+    assert(muse_model_start_voice(5,MUSE_PROVIDER_GEMINI,wav,bytes));
+    assert(active->wav==wav && active->wav_len==bytes+44);
+    assert(!memcmp(active->wav+44,pcm,bytes));
+    complete(false); /* success frees it once, on the worker side */
     free(pcm);
     return 0;
 }
@@ -323,7 +338,8 @@ int main(void) {
 #include <cstdlib>
 #include <cstring>
 #include <atomic>
-#define NOTE_MAX_BYTES 640000
+#define NOTE_MAX_BYTES 960000
+#define MUSE_HATCH_WAV_HEADER 44
 #define MIC_RATE 16000
 #define MUSE_HATCH_EV_SENT 1
 #define MUSE_HATCH_EV_HEARD 2
@@ -351,8 +367,8 @@ static void muse_text_plain_reply(char *) {}
 static size_t xStreamBufferReceive(int, void *, size_t room, int) {
     size_t n=input_bytes<room?input_bytes:room; input_bytes-=n; return n;
 }
-static bool muse_model_start(uint32_t id, int, const char *, const uint8_t *, size_t bytes) {
-    assert(bytes>=9600); started++; return start_ok;
+static bool muse_model_start_voice(uint32_t id, int, uint8_t *wav, size_t bytes) {
+    assert(bytes>=9600); started++; if (start_ok) free(wav); return start_ok;
 }
 static bool muse_model_poll(muse_model_result_t *out) {
     if(!has_result) return false; *out=pending; has_result=false; return true;
@@ -380,10 +396,10 @@ int main() {
     s_turn.text=true; result(10); assert(console_texts==1 && replies==1);
     result(10,"CHECK API KEY"); assert(failures==1 && s_turn.phase==P_IDLE && accepted==2);
     s_turn={}; s_turn.phase=P_LISTEN; s_turn.end_requested=true;
-    s_model_pcm=(uint8_t *)malloc(NOTE_MAX_BYTES); input_bytes=16000;
+    s_model_pcm=(uint8_t *)malloc(NOTE_MAX_BYTES + MUSE_HATCH_WAV_HEADER); input_bytes=16000;
     pump_model(); assert(started==1 && s_turn.phase==P_WAIT_REPLY && !s_model_pcm && s_model_request==11);
     s_turn.phase=P_LISTEN; s_model_bytes=0; input_bytes=100;
-    s_model_pcm=(uint8_t *)malloc(NOTE_MAX_BYTES);
+    s_model_pcm=(uint8_t *)malloc(NOTE_MAX_BYTES + MUSE_HATCH_WAV_HEADER);
     pump_model(); assert(failures==2 && started==1); free(s_model_pcm);
     return 0;
 }

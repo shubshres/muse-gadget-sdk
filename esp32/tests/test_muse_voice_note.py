@@ -390,8 +390,8 @@ typedef struct fake_stream *StreamBufferHandle_t;
         self.assert_sent(run, pcm)
         self.assertEqual(run['parts'], [len(HEAD), self.PART_CHARS, self.PART_CHARS, len(TAIL)])
 
-    def test_minute_note_streams_without_truncation(self):
-        pcm = pcm_bytes(60 * self.MIC, 60)
+    def test_thirty_second_note_streams_without_truncation(self):
+        pcm = pcm_bytes(30 * self.MIC, 60)
         self.assert_sent(self.record(pcm, 320), pcm)
 
     def test_uneven_receives_across_several_parts(self):
@@ -402,11 +402,11 @@ typedef struct fake_stream *StreamBufferHandle_t;
             with self.subTest(step=step, sched=sched):
                 self.assert_sent(self.record(pcm, step, sched=sched), pcm)
 
-    def test_minute_cap_ends_the_note(self):
+    def test_thirty_second_cap_ends_the_note(self):
         # 30000-byte polls put more than the cap in the backlog at once.
-        pcm = pcm_bytes(60 * self.MIC + 3200, 6)
+        pcm = pcm_bytes(30 * self.MIC + 3200, 6)
         run = self.record(pcm, 30000, release=False)
-        self.assert_sent(run, pcm[:60 * self.MIC])
+        self.assert_sent(run, pcm[:30 * self.MIC])
 
 
 if __name__ == '__main__':

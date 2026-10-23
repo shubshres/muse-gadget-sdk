@@ -37,6 +37,9 @@ bool muse_model_init(void);
 /* Copies input and credentials. PCM is mono 16-bit, 16 kHz. Only one job at a time. */
 bool muse_model_start(uint32_t request, muse_provider_t provider,
                       const char *text, const uint8_t *pcm, size_t bytes);
+/* wav has 44 bytes of header space followed by `bytes` of PCM. Takes ownership
+ * only on success; on failure the caller retains and frees the buffer. */
+bool muse_model_start_voice(uint32_t request, muse_provider_t provider, uint8_t *wav, size_t bytes);
 bool muse_model_poll(muse_model_result_t *out);
 /* Session task only: commit only replies accepted for the current turn. */
 void muse_model_accept(const muse_model_result_t *result);

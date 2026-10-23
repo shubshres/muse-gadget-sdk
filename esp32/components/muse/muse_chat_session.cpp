@@ -1081,7 +1081,7 @@ static void turn_begin(uint32_t gen)
             turn_fail("ADD AZURE SPEECH KEY FOR VOICE");
             return;
         }
-        s_model_pcm = static_cast<uint8_t *>(psram_alloc(NOTE_MAX_BYTES));
+        s_model_pcm = static_cast<uint8_t *>(psram_alloc(NOTE_MAX_BYTES + MUSE_HATCH_WAV_HEADER));
         if (!s_model_pcm) { turn_fail("OUT OF MEMORY"); return; }
         s_model_bytes = 0;
         s_turn.phase = P_LISTEN;
@@ -2067,15 +2067,14 @@ static void pump_model(void)
 {
     if (s_direct && s_turn.phase == P_LISTEN) {
         size_t room = NOTE_MAX_BYTES - s_model_bytes;
-        s_model_bytes += room ? xStreamBufferReceive(s_in, s_model_pcm + s_model_bytes, room, 0) : 0;
+        s_model_bytes += room ? xStreamBufferReceive(s_in, s_model_pcm + MUSE_HATCH_WAV_HEADER + s_model_bytes, room, 0) : 0;
         if (s_turn.end_requested || s_model_bytes == NOTE_MAX_BYTES) {
             if (s_model_bytes < MIC_RATE * 2 * 3 / 10) {
                 turn_fail("DIDN'T CATCH THAT");
-            } else if (!muse_model_start(++s_model_request, s_provider, nullptr, s_model_pcm, s_model_bytes)) {
+            } else if (!muse_model_start_voice(++s_model_request, s_provider, s_model_pcm, s_model_bytes)) {
                 turn_fail("MODEL BUSY OR CHECK SPEECH KEY");
             } else {
-                free(s_model_pcm);
-                s_model_pcm = nullptr;
+                s_model_pcm = nullptr;   /* the model worker owns the WAV now */
                 s_turn.phase = P_WAIT_REPLY;
                 s_turn.chat_us = s_turn.last_event_us = now_us();
                 emit(MUSE_HATCH_EV_SENT, nullptr);
