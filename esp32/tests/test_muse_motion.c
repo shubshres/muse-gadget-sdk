@@ -43,12 +43,46 @@ int main(void)
     assert(update(&g, FACE_UP, false, true, 1200) == 0);
     assert(update(&g, FACE_DOWN, false, true, 1300) == 0);
     assert(update(&g, FACE_DOWN, false, true, 1749) == 0);
-    assert(update(&g, FACE_DOWN, false, true, 1750) == MUSE_MOTION_SILENCE);
+    assert(update(&g, FACE_DOWN, false, true, 1750) == (MUSE_MOTION_SILENCE | MUSE_MOTION_SLEEP));
     assert(update(&g, FACE_DOWN, false, true, 2000) == 0);
     assert(update(&g, FACE_DOWN, false, false, 2100) == 0);
     /* Starting a new reply while already inverted does not silence it. */
     assert(update(&g, FACE_DOWN, false, true, 2200) == 0);
     assert(update(&g, FACE_DOWN, false, true, 3000) == 0);
+
+    /* Idle flips sleep too; impacts and brief reversals restart the hold. */
+    muse_motion_gesture_t idle = { 0 };
+    assert(update(&idle, FACE_UP, false, false, 100) == 0);
+    assert(update(&idle, TILTED, false, false, 200) == 0);
+    assert(update(&idle, TILTED, false, false, 700) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 800) == 0);
+    assert(update(&idle, FACE_UP, false, false, 1000) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 1100) == 0);
+    assert(update(&idle, IMPACT, false, false, 1400) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 1500) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 1949) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 1950) == MUSE_MOTION_SLEEP);
+    assert(update(&idle, FACE_DOWN, false, false, 2000) == 0);
+    /* Sleeping in the flipped pose must not immediately wake the board. */
+    assert(update(&idle, FACE_DOWN, true, false, 2050) == 0);
+    assert(update(&idle, FACE_DOWN, true, false, 2600) == 0);
+    assert(update(&idle, FACE_UP, true, false, 2700) == 0);
+    assert(update(&idle, FACE_UP, true, false, 2950) == MUSE_MOTION_WAKE);
+    assert(update(&idle, FACE_UP, false, false, 3000) == 0);
+    assert(update(&idle, FACE_UP, false, false, 3600) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 3700) == 0);
+    assert(update(&idle, FACE_DOWN, false, false, 4150) == MUSE_MOTION_SLEEP);
+
+    /* The existing turn-over switch controls sleep and silence together. */
+    muse_motion_gesture_t off = { 0 };
+    assert(muse_motion_update(&off, FACE_UP, false, true, true, false, 100) == 0);
+    assert(muse_motion_update(&off, FACE_DOWN, false, true, true, false, 200) == 0);
+    assert(muse_motion_update(&off, FACE_DOWN, false, true, true, false, 800) == 0);
+    assert(muse_motion_update(&off, FACE_DOWN, false, true, true, true, 900) == 0);
+    assert(update(&off, FACE_DOWN, false, true, 1500) == 0);
+    assert(update(&off, FACE_UP, false, true, 1600) == 0);
+    assert(muse_motion_update(&off, FACE_UP, false, true, true, false, 1800) == 0);
+    assert(muse_motion_update(&off, FACE_UP, false, true, true, false, 2300) == 0);
 
     muse_motion_gesture_t disabled = { 0 };
     assert(muse_motion_update(&disabled, FACE_UP, true, false, false, true, 100) == 0);

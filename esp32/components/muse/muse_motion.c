@@ -36,11 +36,15 @@ unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
 {
     unsigned events = 0;
     if (!steady_gravity(v)) {
-        g->wake_since_ms = g->silence_since_ms = 0;
+        g->wake_since_ms = g->flip_since_ms = 0;
         return 0;
     }
 
-    if (asleep != g->was_asleep) {
+    if (!g->initialized || asleep != g->was_asleep) {
+        g->initialized = true;
+        g->flip_pose = v;
+        g->flip_armed = !asleep && silence_enabled;
+        g->flip_since_ms = 0;
         g->was_asleep = asleep;
         g->sleep_pose = v;
         g->wake_armed = asleep && wake_enabled;
@@ -52,17 +56,11 @@ unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
         g->wake_armed = asleep && wake_enabled;
         g->wake_since_ms = 0;
     }
-    if (replying != g->was_replying) {
-        g->was_replying = replying;
-        g->reply_pose = v;
-        g->silence_armed = replying && silence_enabled;
-        g->silence_since_ms = 0;
-    }
     if (silence_enabled != g->was_silence_enabled) {
         g->was_silence_enabled = silence_enabled;
-        g->reply_pose = v;
-        g->silence_armed = replying && silence_enabled;
-        g->silence_since_ms = 0;
+        g->flip_pose = v;
+        g->flip_armed = !asleep && silence_enabled;
+        g->flip_since_ms = 0;
     }
 
     /* A deliberate ~50-degree change from the pose at sleep, held 250 ms. */
@@ -76,15 +74,17 @@ unsigned muse_motion_update(muse_motion_gesture_t *g, muse_motion_sample_t v,
         g->wake_since_ms = 0;
     }
 
-    /* Turning the face over during a reply: >120 degrees, held 450 ms. */
-    if (replying && silence_enabled && g->silence_armed && dot(g->reply_pose, v) < -ONE_G_SQUARED / 2) {
-        if (!g->silence_since_ms) g->silence_since_ms = now_ms ? now_ms : 1;
-        if (now_ms - g->silence_since_ms >= 450) {
-            g->silence_armed = false;
-            events |= MUSE_MOTION_SILENCE;
+    /* Turn over from the awake pose: >120 degrees, held 450 ms.
+     * Capture a new pose after waking so a stationary board cannot re-trigger. */
+    if (!asleep && silence_enabled && g->flip_armed && dot(g->flip_pose, v) < -ONE_G_SQUARED / 2) {
+        if (!g->flip_since_ms) g->flip_since_ms = now_ms ? now_ms : 1;
+        if (now_ms - g->flip_since_ms >= 450) {
+            g->flip_armed = false;
+            events |= MUSE_MOTION_SLEEP;
+            if (replying) events |= MUSE_MOTION_SILENCE;
         }
     } else {
-        g->silence_since_ms = 0;
+        g->flip_since_ms = 0;
     }
     return events;
 }

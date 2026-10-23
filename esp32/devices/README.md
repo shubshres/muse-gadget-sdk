@@ -70,9 +70,10 @@ measured 16 MB flash / 8 MB PSRAM unit. Its hardware and validation limits
 are documented separately; this is not a generic ESP-VoCat profile.
 
 On the Waveshare ESP32-S3-Touch-AMOLED-1.75C, the Auto-sleep settings page
-has independent toggles for Raise to wake and Turn over to silence. Raise the
+has independent toggles for Raise to wake and Turn over to sleep. Raise the
 board about 50° from the position where it went to sleep to wake the screen;
-turn it over while Muse is thinking or speaking to silence that reply. Tap
+turn it over and hold it steady for about half a second to sleep. This also
+silences the current reply if Muse is thinking or speaking. Tap
 Muse's avatar while it is speaking to pause playback, then tap again to
 resume. The accelerometer must be present for the motion controls; the
 physical buttons continue to work if it isn't. These controls do not apply to

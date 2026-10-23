@@ -572,6 +572,9 @@ static void input_task(void *arg)
                 ESP_LOGI(TAG, "silencing reply (turned over)");
                 muse_voice_cancel_response();
             }
+            if (motion & MUSE_MOTION_SLEEP) {
+                set_asleep(true, "turned over");
+            }
         }
 
         if (s_power_off_requested) {

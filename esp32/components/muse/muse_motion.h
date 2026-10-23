@@ -21,17 +21,18 @@
 
 #define MUSE_MOTION_WAKE    (1u << 0)
 #define MUSE_MOTION_SILENCE (1u << 1)
+#define MUSE_MOTION_SLEEP   (1u << 2)
 
 typedef struct {
     int16_t x, y, z;  /* QMI8658 acceleration, 16384 counts per g */
 } muse_motion_sample_t;
 
 typedef struct {
-    muse_motion_sample_t sleep_pose, reply_pose;
-    uint32_t wake_since_ms, silence_since_ms;
-    bool was_asleep, was_replying;
+    muse_motion_sample_t sleep_pose, flip_pose;
+    uint32_t wake_since_ms, flip_since_ms;
+    bool initialized, was_asleep;
     bool was_wake_enabled, was_silence_enabled;
-    bool wake_armed, silence_armed;
+    bool wake_armed, flip_armed;
 } muse_motion_gesture_t;
 
 /* Call with each fresh accelerometer sample. Time is monotonic milliseconds. */

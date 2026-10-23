@@ -1279,7 +1279,7 @@ static void build_sleep_page(lv_obj_t *tile)
     }
     if (muse_board->poll_motion) {
         switch_row(list, "Raise to wake", muse_settings_motion_wake(), on_motion_wake);
-        switch_row(list, "Turn over to silence", muse_settings_motion_silence(), on_motion_silence);
+        switch_row(list, "Turn over to sleep", muse_settings_motion_silence(), on_motion_silence);
     }
     button(list, LV_SYMBOL_EYE_CLOSE "  Sleep now", COLOR_ACCENT, on_sleep_now, NULL);
     note(list, muse_board->poll_motion ? "Tap the screen, press a button, or raise the board to wake."
