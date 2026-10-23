@@ -12,10 +12,23 @@ extern "C" {
 #endif
 /* Bounded request/response codecs, also exercised by the host tests. */
 char *muse_model_body(muse_provider_t provider, const char *model, const char *text);
+#define MUSE_MODEL_HISTORY_PAIRS 8
+#define MUSE_MODEL_HISTORY_BYTES (32 * 1024)
+typedef struct {
+    cJSON *messages;             /* canonical user/assistant text messages */
+    size_t bytes;
+    unsigned pairs;
+} muse_model_history_t;
+void muse_model_history_clear(muse_model_history_t *history);
+bool muse_model_history_append(muse_model_history_t *history, const char *prompt, const char *reply);
+char *muse_model_body_with_history(muse_provider_t provider, const char *model,
+                                  const char *text, const cJSON *history);
 char *muse_model_reply(muse_provider_t provider, const cJSON *json);
 
 typedef struct {
     uint32_t request;
+    uint32_t conversation;
+    char *prompt;                /* caller frees; input transcript or typed text */
     char *text;                  /* caller frees */
     char *heard;                 /* caller frees */
     char error[64];              /* never includes response bodies or credentials */
@@ -25,6 +38,9 @@ bool muse_model_init(void);
 bool muse_model_start(uint32_t request, muse_provider_t provider,
                       const char *text, const uint8_t *pcm, size_t bytes);
 bool muse_model_poll(muse_model_result_t *out);
+/* Session task only: commit only replies accepted for the current turn. */
+void muse_model_accept(const muse_model_result_t *result);
+void muse_model_forget(void);
 #ifdef __cplusplus
 }
 #endif

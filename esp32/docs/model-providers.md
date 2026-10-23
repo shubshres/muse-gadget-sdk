@@ -37,8 +37,15 @@ printable ASCII characters without spaces. Empty key uploads (`--clear`)
 remove a provider's key. Empty keyboard input preserves the existing value.
 
 Direct chat uses HTTPS from the device to the provider and the provider's API
-billing. It does not use Muse's VM, personal memory, tools or conversation
-history: each direct request is independent. Replies are requested with a
+billing. The device includes recent conversation text with each request:
+up to eight completed user/reply exchanges, with a 32 KiB text budget. Oldest
+whole exchanges are removed first; an individual exchange above the budget
+clears the retained context. Voice transcripts and typed messages share this
+history. Failed and canceled requests are not added. History stays in RAM
+through sleep and Wi-Fi reconnects, and clears on reboot, provider/model/key
+changes, or **Settings → Muse → New conversation**. It does not use Muse's VM,
+personal memory or tools. Sending recent history uses additional provider
+input tokens and quota. Replies are requested with a
 2,048-token output budget; the device accepts at most 64 KiB of JSON and
 16 KiB of reply text. Voice captions and playback keep the existing 1,023-byte
 caption limit. Typed USB chat (`python3 tools/muse/chat.py "hello"`) prints the

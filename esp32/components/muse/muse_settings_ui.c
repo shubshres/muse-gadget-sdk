@@ -96,7 +96,7 @@ static int64_t s_link_reset_armed_us;
 static int64_t s_sdk_token_bad_us;   /* when an invalid SDK token was entered */
 
 #if CONFIG_MUSE_HATCH
-static lv_obj_t *s_provider_value, *s_model_value;
+static lv_obj_t *s_provider_value, *s_model_value, *s_model_new_chat;
 static lv_obj_t *s_model_key_values[MUSE_PROVIDER_COUNT];
 static muse_provider_t s_edit_provider;
 static int64_t s_model_error_us;
@@ -861,6 +861,12 @@ static void on_provider(lv_event_t *e)
     model_error(muse_settings_set_provider((muse_settings_provider() + 1) % MUSE_PROVIDER_COUNT));
 }
 
+static void on_model_new_chat(lv_event_t *e)
+{
+    (void)e;
+    if (muse_settings_provider() != MUSE_PROVIDER_MUSE) muse_hatch_config_changed();
+}
+
 static void on_model_done(const char *text)
 {
     if (text[0]) model_error(muse_settings_set_model_id(s_edit_provider, text));
@@ -992,6 +998,7 @@ static void build_hatch_page(lv_obj_t *tile)
 #if CONFIG_MUSE_HATCH
     row(list, NULL, "Chat provider", &s_provider_value, on_provider, NULL);
     row(list, NULL, "Model ID", &s_model_value, on_model, NULL);
+    s_model_new_chat = button(list, "New conversation", COLOR_ACCENT, on_model_new_chat, NULL);
     for (int i = 1; i < MUSE_PROVIDER_COUNT; i++) {
         char label[32];
         snprintf(label, sizeof(label), "%s API key", muse_provider_name(i));
@@ -1048,6 +1055,7 @@ static void tick_hatch(void)
     char model[MUSE_MODEL_ID_MAX + 1];
     muse_settings_model(provider, model, NULL);
     set_text(s_model_value, provider == MUSE_PROVIDER_MUSE ? "Managed by Muse" : model);
+    lv_obj_set_flag(s_model_new_chat, LV_OBJ_FLAG_HIDDEN, provider == MUSE_PROVIDER_MUSE);
     for (int i = 1; i < MUSE_PROVIDER_COUNT; i++)
         set_text(s_model_key_values[i], muse_settings_model_ready(i) ? "Set" : "Not set");
 #endif

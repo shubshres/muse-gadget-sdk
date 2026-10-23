@@ -279,8 +279,11 @@ uploading a key. Updating firmware keeps existing Wi-Fi, pairing and saved keys.
 For OpenAI or Anthropic, replace `gemini` in the key-upload command with
 `openai` or `anthropic`. You can also switch providers in Settings; select
 **Muse** to use the existing Muse pairing again. Direct providers use their
-own API billing and currently handle each request independently, without
-Muse's memory or tools.
+own API billing and keep the most recent eight completed exchanges in RAM
+(up to 32 KiB of text) so follow-up questions have context. Voice and typed
+chat share this conversation. It survives sleep and reconnects; rebooting,
+changing provider/model/key, or tapping **New conversation** in Settings clears
+it. This recent context does not include Muse's personal memory or tools.
 
 ## Boards
 

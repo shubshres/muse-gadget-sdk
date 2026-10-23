@@ -2062,6 +2062,7 @@ static void pump_model(void)
                 if (result.heard) emit(MUSE_HATCH_EV_HEARD, result.heard);
                 int i = bind_msg("direct-model", nullptr);
                 if (i >= 0) {
+                    muse_model_accept(&result);
                     if (s_turn.text) {
                         muse_hatch_console("text", result.text, "\"msg\":%d", i);
                         s_turn.msgs[i].len = strlen(result.text);
@@ -2076,6 +2077,7 @@ static void pump_model(void)
         }
         free(result.text);
         free(result.heard);
+        free(result.prompt);
     }
 }
 #endif
@@ -2109,6 +2111,9 @@ static void handle(const cmd_t &cmd)
         }
         break;
     case CMD_FORGET:
+#if CONFIG_MUSE_ENABLED
+        muse_model_forget();
+#endif
         if (s_turn.phase != P_IDLE) {
             turn_fail("SETTINGS CHANGED");
         }

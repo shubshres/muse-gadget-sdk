@@ -88,6 +88,44 @@ int nvs_commit(int h) { return fail_commit ? 9 : 0; }
 bool muse_link_wifi_get(char *s, char *p) { return false; }
 bool muse_link_wifi_set(const char *s, const char *p) { return false; }
 static void changed(muse_setting_t what) { assert(what==MUSE_SETTING_HATCH); notifications++; }
+static void history_codec(void) {
+    muse_model_history_t h={0};
+    assert(muse_model_history_append(&h,"My pet is named Mochi.","Mochi is a great name!"));
+    for(int p=1;p<MUSE_PROVIDER_COUNT;p++) {
+        char *body=muse_model_body_with_history(p,"test-model","What is my pet's name?",h.messages);
+        assert(body);
+        cJSON *root=cJSON_Parse(body); free(body);
+        cJSON *messages=cJSON_GetObjectItem(root,p==MUSE_PROVIDER_GEMINI ? "contents":"messages");
+        assert(cJSON_GetArraySize(messages)==3);
+        const char *roles[]={"user",p==MUSE_PROVIDER_GEMINI ? "model":"assistant","user"};
+        const char *texts[]={"My pet is named Mochi.","Mochi is a great name!","What is my pet's name?"};
+        for(int i=0;i<3;i++) {
+            cJSON *m=cJSON_GetArrayItem(messages,i);
+            assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(m,"role")),roles[i]));
+            cJSON *t=p==MUSE_PROVIDER_GEMINI ? cJSON_GetObjectItem(cJSON_GetArrayItem(cJSON_GetObjectItem(m,"parts"),0),"text") : cJSON_GetObjectItem(m,"content");
+            assert(!strcmp(cJSON_GetStringValue(t),texts[i]));
+        }
+        cJSON_Delete(root);
+    }
+    for(int i=0;i<10;i++) {
+        char prompt[16]; snprintf(prompt,sizeof(prompt),"turn-%d",i);
+        assert(muse_model_history_append(&h,prompt,"answer"));
+    }
+    assert(h.pairs==8 && cJSON_GetArraySize(h.messages)==16);
+    assert(!strcmp(cJSON_GetStringValue(cJSON_GetObjectItem(cJSON_GetArrayItem(h.messages,0),"content")),"turn-2"));
+    muse_model_history_clear(&h);
+    char large[10001]; memset(large,'a',10000); large[10000]=0;
+    for(int i=0;i<4;i++) assert(muse_model_history_append(&h,large,large));
+    assert(h.pairs==1 && h.bytes==20000); /* byte budget evicts whole exchanges */
+    char *too_large=malloc(MUSE_MODEL_HISTORY_BYTES+1);
+    memset(too_large,'b',MUSE_MODEL_HISTORY_BYTES); too_large[MUSE_MODEL_HISTORY_BYTES]=0;
+    assert(!muse_model_history_append(&h,too_large,"answer"));
+    assert(!h.messages && !h.pairs && !h.bytes); free(too_large);
+    assert(!muse_model_history_append(&h,"question",NULL));
+    cJSON *bad=cJSON_Parse("[{\"role\":\"assistant\",\"content\":\"wrong\"}]");
+    assert(!muse_model_body_with_history(MUSE_PROVIDER_GEMINI,"test","next",bad)); cJSON_Delete(bad);
+    muse_model_history_clear(&h);
+}
 static void codec(void) {
     for(int p=1;p<MUSE_PROVIDER_COUNT;p++) {
         char *body=muse_model_body(p,"test-model","hi\n\"世界"); assert(body);
@@ -115,6 +153,7 @@ static void codec(void) {
 }
 int main(void) {
     codec();
+    history_codec();
     assert(!muse_settings_init());
     muse_settings_set_listener(changed);
     assert(muse_settings_provider()==MUSE_PROVIDER_MUSE);
@@ -156,6 +195,84 @@ int main(void) {
                    str(ROOT / 'components/muse/muse_settings.c'), str(JSON / 'cJSON.c'),
                    '-o', str(out / 'test')]
             subprocess.run(cmd, check=True, capture_output=True, text=True)
+            subprocess.run([str(out / 'test')], check=True)
+
+    def test_history_lifecycle_and_provider_isolation(self):
+        source = (ROOT / 'components/muse/muse_model.c').read_text()
+        state = source[source.index('#define RESPONSE_MAX'):source.index('static esp_err_t on_http(')]
+        start = source[source.index('bool muse_model_init('):source.index('bool muse_model_poll(')]
+        code = r'''
+#include <assert.h>
+#include <stdlib.h>
+#include <string.h>
+#include "muse_model.h"
+#define MALLOC_CAP_SPIRAM 1
+#define MALLOC_CAP_8BIT 2
+#define portMAX_DELAY 0
+#define pdPASS 1
+#define MUSE_HATCH_WAV_HEADER 44
+#define ESP_LOGW(...) ((void)0)
+typedef int QueueHandle_t;
+typedef int SemaphoreHandle_t;
+static int xQueueCreate(int n, size_t size) { return 1; }
+static int xSemaphoreCreateMutex(void) { return 1; }
+static void xSemaphoreTake(int a, int b) {}
+static void xSemaphoreGive(int a) {}
+static void *heap_caps_malloc(size_t n, int caps) { return malloc(n); }
+static void *heap_caps_calloc(size_t n, size_t size, int caps) { return calloc(n,size); }
+static void muse_hatch_wav_header(uint8_t *out, uint32_t rate) { memset(out,0,44); }
+''' + state + r'''
+static job_t *active;
+static char selected_model[96]="model-a", selected_key[512]="key-a";
+void muse_settings_model(muse_provider_t p, char model[MUSE_MODEL_ID_MAX+1], char key[MUSE_MODEL_KEY_MAX+1]) {
+    strcpy(model,selected_model); strcpy(key,selected_key);
+}
+void muse_settings_azure_tts(char region[MUSE_AZURE_REGION_MAX+1], char key[MUSE_AZURE_KEY_MAX+1]) {
+    strcpy(region,"eastus"); strcpy(key,"speech-key");
+}
+static void worker(void *arg) {}
+static int xTaskCreatePinnedToCoreWithCaps(void (*fn)(void *), const char *name, int stack, void *arg, int priority, void *handle, int core, int caps) {
+    active=arg; return pdPASS;
+}
+''' + start + r'''
+static void begin(muse_provider_t provider, int pairs) {
+    assert(muse_model_start(1,provider,"next",NULL,0));
+    assert(cJSON_GetArraySize(active->history)==pairs*2);
+}
+static void complete(bool accepted) {
+    active->result.prompt=active->prompt;
+    active->result.text="reply";
+    if(accepted) muse_model_accept(&active->result);
+    free(active->prompt); free(active->wav); cJSON_Delete(active->history); free(active); active=NULL; s_busy=false;
+}
+int main(void) {
+    assert(muse_model_init());
+    begin(MUSE_PROVIDER_GEMINI,0); complete(false); /* canceled */
+    begin(MUSE_PROVIDER_GEMINI,0); complete(true);
+    begin(MUSE_PROVIDER_GEMINI,1); complete(true);
+    begin(MUSE_PROVIDER_GEMINI,2);
+    muse_model_forget(); complete(true); /* old in-flight reply cannot refill cleared history */
+    begin(MUSE_PROVIDER_GEMINI,0); complete(true);
+    begin(MUSE_PROVIDER_OPENAI,0); complete(true); /* never send Gemini context to OpenAI */
+    begin(MUSE_PROVIDER_ANTHROPIC,0); complete(true);
+    strcpy(selected_model,"model-b"); begin(MUSE_PROVIDER_ANTHROPIC,0); complete(true);
+    strcpy(selected_key,"key-b"); begin(MUSE_PROVIDER_ANTHROPIC,0); complete(true);
+    begin(MUSE_PROVIDER_ANTHROPIC,1); complete(false);
+    muse_model_forget(); assert(!s_history.messages);
+    return 0;
+}
+'''
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            (out / 'esp_err.h').write_text('typedef int esp_err_t;\n')
+            (out / 'test.c').write_text(code)
+            cmd = [*shlex.split(os.environ.get('CC', 'cc')), '-std=gnu11',
+                   '-fsanitize=address,undefined', '-include', str(ROOT / 'tests/host_compat.h'),
+                   '-I' + str(out), '-I' + str(JSON), '-I' + str(ROOT / 'components/muse'),
+                   str(out / 'test.c'), str(ROOT / 'components/muse/muse_model_codec.c'), str(JSON / 'cJSON.c'),
+                   '-o', str(out / 'test')]
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
             subprocess.run([str(out / 'test')], check=True)
 
     def test_tls_chain_config_guard(self):
@@ -201,10 +318,11 @@ static struct { phase_t phase; uint32_t gen; bool text, end_requested;
     struct msg_t { size_t len; } msgs[1];
 } s_turn;
 using msg_t=decltype(s_turn.msgs[0]);
-struct muse_model_result_t { uint32_t request; char *text, *heard; char error[64]; };
+struct muse_model_result_t { uint32_t request; char *text, *heard; char error[64]; char *prompt; };
 static muse_model_result_t pending;
 static bool has_result;
-static int replies, failures, console_texts, started;
+static int replies, failures, console_texts, started, accepted;
+static void muse_model_accept(const muse_model_result_t *) { accepted++; }
 static size_t xStreamBufferReceive(int, void *, size_t room, int) {
     size_t n=input_bytes<room?input_bytes:room; input_bytes-=n; return n;
 }
@@ -226,16 +344,16 @@ static void show_reply_start(msg_t &) {}
 static void message_done(int, const char *) {}
 ''' + pump + r'''
 static void result(uint32_t request, const char *error="") {
-    pending={request,strdup("answer"),strdup("question"),{}};
+    pending={request,strdup("answer"),strdup("question"),{},strdup("question")};
     strcpy(pending.error,error); has_result=true; pump_model();
 }
 int main() {
     s_turn.phase=P_WAIT_REPLY; s_turn.gen=7;
-    result(9); assert(!replies && !failures); // replaced request
-    s_gen=8; result(10); assert(!replies && !failures); // cancelled voice generation
-    s_gen=7; result(10); assert(replies==1);
+    result(9); assert(!replies && !failures && !accepted); // replaced request
+    s_gen=8; result(10); assert(!replies && !failures && !accepted); // cancelled voice generation
+    s_gen=7; result(10); assert(replies==1 && accepted==1);
     s_turn.text=true; result(10); assert(console_texts==1 && replies==1);
-    result(10,"CHECK API KEY"); assert(failures==1 && s_turn.phase==P_IDLE);
+    result(10,"CHECK API KEY"); assert(failures==1 && s_turn.phase==P_IDLE && accepted==2);
     s_turn={}; s_turn.phase=P_LISTEN; s_turn.end_requested=true;
     s_model_pcm=(uint8_t *)malloc(NOTE_MAX_BYTES); input_bytes=16000;
     pump_model(); assert(started==1 && s_turn.phase==P_WAIT_REPLY && !s_model_pcm && s_model_request==11);

@@ -25,6 +25,7 @@ typedef struct {
     char model[MUSE_MODEL_ID_MAX + 1], key[MUSE_MODEL_KEY_MAX + 1];
     char region[MUSE_AZURE_REGION_MAX + 1], speech_key[MUSE_AZURE_KEY_MAX + 1];
     char *prompt;
+    cJSON *history;
     uint8_t *wav;
     size_t wav_len;
     char *response;
@@ -34,6 +35,38 @@ typedef struct {
 static QueueHandle_t s_results;
 static SemaphoreHandle_t s_lock;
 static bool s_busy;
+static muse_model_history_t s_history;
+static uint32_t s_conversation = 1;
+static muse_provider_t s_context_provider;
+static char s_context_model[MUSE_MODEL_ID_MAX + 1], s_context_key[MUSE_MODEL_KEY_MAX + 1];
+
+static void forget_locked(void)
+{
+    muse_model_history_clear(&s_history);
+    s_conversation++;
+    s_context_provider = MUSE_PROVIDER_MUSE;
+    memset(s_context_model, 0, sizeof(s_context_model));
+    memset(s_context_key, 0, sizeof(s_context_key));
+}
+
+void muse_model_forget(void)
+{
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    forget_locked();
+    xSemaphoreGive(s_lock);
+}
+
+void muse_model_accept(const muse_model_result_t *result)
+{
+    if (!s_lock || result->error[0] || !result->prompt || !result->text) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (result->conversation == s_conversation &&
+        !muse_model_history_append(&s_history, result->prompt, result->text)) {
+        ESP_LOGW("muse_model", "Exchange could not be retained in recent conversation");
+    }
+    xSemaphoreGive(s_lock);
+}
 
 static esp_err_t on_http(esp_http_client_event_t *event)
 {
@@ -128,7 +161,7 @@ static void worker(void *arg)
             snprintf(url, sizeof(url), "https://generativelanguage.googleapis.com/v1beta/models/%s:generateContent", job->model);
         else snprintf(url, sizeof(url), "%s", job->provider == MUSE_PROVIDER_OPENAI ?
             "https://api.openai.com/v1/chat/completions" : "https://api.anthropic.com/v1/messages");
-        char *body = muse_model_body(job->provider, job->model, job->prompt);
+        char *body = muse_model_body_with_history(job->provider, job->model, job->prompt, job->history);
         cJSON *root = body ? request(job, url, body, strlen(body), false) : NULL;
         job->result.text = muse_model_reply(job->provider, root);
         if (!job->result.text && !job->result.error[0])
@@ -140,7 +173,9 @@ static void worker(void *arg)
         snprintf(job->result.error, sizeof(job->result.error), "MODEL: OUT OF MEMORY");
     free(job->response);
     free(job->wav);
-    free(job->prompt);
+    if (job->result.text && !job->result.error[0]) job->result.prompt = job->prompt;
+    else free(job->prompt);
+    cJSON_Delete(job->history);
     memset(job->key, 0, sizeof(job->key));
     memset(job->speech_key, 0, sizeof(job->speech_key));
     xQueueSend(s_results, &job->result, portMAX_DELAY);
@@ -173,6 +208,16 @@ bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, c
         job->provider = provider;
         muse_settings_model(provider, job->model, job->key);
         muse_settings_azure_tts(job->region, job->speech_key);
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (s_context_provider != provider || strcmp(s_context_model, job->model) || strcmp(s_context_key, job->key)) {
+            forget_locked();
+            s_context_provider = provider;
+            strlcpy(s_context_model, job->model, sizeof(s_context_model));
+            strlcpy(s_context_key, job->key, sizeof(s_context_key));
+        }
+        job->result.conversation = s_conversation;
+        job->history = s_history.messages ? cJSON_Duplicate(s_history.messages, true) : cJSON_CreateArray();
+        xSemaphoreGive(s_lock);
         bool speech = !text && pcm;
         if (text) job->prompt = strdup(text);
         else {
@@ -189,12 +234,12 @@ bool muse_model_start(uint32_t id, muse_provider_t provider, const char *text, c
         bool region_ok = job->region[0];
         for (const char *p = job->region; *p; p++)
             if (!(*p >= 'a' && *p <= 'z') && !(*p >= '0' && *p <= '9')) region_ok = false;
-        ok = job->key[0] && job->model[0] && (text ? job->prompt != NULL :
+        ok = job->history && job->key[0] && job->model[0] && (text ? job->prompt != NULL :
              job->wav && (!speech || (region_ok && job->speech_key[0]))) &&
              xTaskCreatePinnedToCoreWithCaps(worker, "muse_model", 16 * 1024, job, 4, NULL, 0,
                  MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS;
         if (!ok) {
-            free(job->prompt); free(job->wav);
+            free(job->prompt); free(job->wav); cJSON_Delete(job->history);
             memset(job, 0, sizeof(*job)); free(job);
         }
     }
