@@ -256,6 +256,7 @@ void muse_voice_toggle_pause(void)
 static volatile bool s_monitor;
 static volatile float s_monitor_db = -100.0f;
 static volatile bool s_chirp;
+static atomic_bool s_pet_sound;
 static volatile bool s_loopback;
 static volatile bool s_mp3test;
 
@@ -1113,6 +1114,7 @@ static void voice_task(void *arg)
 {
     bool pending_down = false;
     bool power_off_played = false;
+    unsigned pet_variant = 0;
     muse_audio_selftest();
     if (muse_settings_startup_sound() && muse_settings_speaker_on() && !muse_state_asleep()) {
         muse_audio_startup();
@@ -1121,6 +1123,7 @@ static void voice_task(void *arg)
     for (;;) {
         if (atomic_load(&s_power_off_requested)) {
             pending_down = false;
+            atomic_store(&s_pet_sound, false);
             if (!power_off_played) {
                 power_off_audio();
                 power_off_played = true;
@@ -1140,6 +1143,7 @@ static void voice_task(void *arg)
             /* A press goes first: send_held() leaves it queued and returns
              * without backing off, so retrying before it's read would spin. */
             if (held_due() && !press_waiting()) {
+                atomic_store(&s_pet_sound, false);
                 atomic_store(&s_cancel_response, false);
                 set_resting(false);   /* full power while it goes, even asleep */
                 muse_wifi_power(MUSE_WIFI_FULL);
@@ -1154,6 +1158,7 @@ static void voice_task(void *arg)
 #endif
             set_resting(rest);
             if (!rest && atomic_exchange(&s_replay_request, false)) {
+                atomic_store(&s_pet_sound, false);
                 pending_down = replay_last_audio();
                 continue;
             }
@@ -1166,6 +1171,11 @@ static void voice_task(void *arg)
                  * Wi-Fi to send saved notes), so the CPU can stay asleep. */
                 muse_state_wait_awake(s_waiting ? HELD_POLL_MS : REST_BACKSTOP_MS);
                 continue;
+            }
+            if (atomic_exchange(&s_pet_sound, false) && muse_state_mode(NULL) == MUSE_MODE_IDLE &&
+                !muse_state_asleep() && muse_settings_speaker_on() && muse_settings_pet_sound() && !press_waiting()) {
+                muse_audio_pet(pet_variant++ % 3);
+                pre_reset();   /* the sound must not become part of the next voice note */
             }
             if (s_chirp) {
                 s_chirp = false;
@@ -1202,6 +1212,7 @@ static void voice_task(void *arg)
             continue;   /* a tap: it only woke Muse */
         }
         if (atomic_load(&s_power_off_requested)) continue;
+        atomic_store(&s_pet_sound, false);   /* talk takes priority over a pending pet tap */
         muse_wifi_power(MUSE_WIFI_FULL);
         atomic_store(&s_cancel_response, false);
         if (!can_record()) {
@@ -1293,6 +1304,14 @@ void muse_voice_power_off(bool shutting_down)
 void muse_voice_request_chirp(void)
 {
     s_chirp = true;
+    muse_state_nudge();
+}
+
+void muse_voice_request_pet_sound(void)
+{
+    if (muse_state_mode(NULL) != MUSE_MODE_IDLE || muse_state_asleep() ||
+        !muse_settings_speaker_on() || !muse_settings_pet_sound() || atomic_load(&s_power_off_requested)) return;
+    atomic_store(&s_pet_sound, true);
     muse_state_nudge();
 }
 

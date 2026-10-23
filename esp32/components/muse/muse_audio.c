@@ -477,3 +477,48 @@ void muse_audio_shutdown(void)
 {
     power_chime(false);
 }
+
+void muse_audio_pet(unsigned variant)
+{
+    /* Bird-like syllables: rounded pitch arches, a fast warble, and actual
+     * quiet gaps. Each tap is a complete phrase, rather than another step
+     * up a musical scale. Frequencies and the weak second harmonic stay
+     * below Nyquist at the 16 kHz output rate. */
+    typedef struct {
+        int ms, gap_ms;
+        float base_hz, bend_hz, warble_hz;
+    } syllable_t;
+    static const syllable_t phrases[3][3] = {
+        { { 80, 35, 2050, 950, 100 }, { 100, 0, 2300, 700, 180 } },
+        { { 55, 25, 2500, 450, 160 }, { 65, 30, 2150, 850, 120 }, { 70, 0, 2400, 650, 140 } },
+        { { 105, 40, 2200, 850, 220 }, { 85, 0, 2000, 1000, 160 } },
+    };
+    static const int counts[] = { 2, 3, 2 };
+    int16_t buf[MUSE_AUDIO_CHUNK];
+    variant %= 3;
+    for (int syllable = 0; syllable < counts[variant]; syllable++) {
+        const syllable_t *s = &phrases[variant][syllable];
+        int frames = MUSE_AUDIO_RATE * s->ms / 1000;
+        float phase = 0;
+        for (int at = 0; at < frames; at += MUSE_AUDIO_CHUNK) {
+            int n = frames - at;
+            if (n > MUSE_AUDIO_CHUNK) n = MUSE_AUDIO_CHUNK;
+            for (int i = 0; i < n; i++) {
+                float x = (float)(at + i) / frames;
+                float arch = sinf((float)M_PI * x);
+                float warble = sinf(2.0f * (float)M_PI * 35.0f * (at + i) / MUSE_AUDIO_RATE);
+                float f = s->base_hz + s->bend_hz * arch + s->warble_hz * warble * arch;
+                phase += 2.0f * (float)M_PI * f / MUSE_AUDIO_RATE;
+                buf[i] = (int16_t)((sinf(phase) + 0.08f * sinf(2.0f * phase)) * arch * arch * 3200.0f);
+            }
+            if (muse_audio_write(buf, n) != ESP_OK) return;
+        }
+        memset(buf, 0, sizeof(buf));
+        int gap = MUSE_AUDIO_RATE * s->gap_ms / 1000;
+        while (gap > 0) {
+            int n = gap > MUSE_AUDIO_CHUNK ? MUSE_AUDIO_CHUNK : gap;
+            if (muse_audio_write(buf, n) != ESP_OK) return;
+            gap -= n;
+        }
+    }
+}

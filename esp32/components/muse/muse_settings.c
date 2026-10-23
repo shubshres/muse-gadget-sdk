@@ -36,6 +36,7 @@ static struct {
     uint8_t volume;
     bool speaker_on;
     bool startup_sound;
+    bool pet_sound;
     uint8_t mic_gain;
     uint8_t brightness;
     uint16_t sleep_s;
@@ -59,6 +60,7 @@ static struct {
     .volume = CONFIG_MUSE_DEFAULT_VOLUME,
     .speaker_on = true,
     .startup_sound = true,
+    .pet_sound = true,
     .mic_gain = 30,
     .brightness = 100,
     .sleep_s = 120,
@@ -137,6 +139,7 @@ esp_err_t muse_settings_init(void)
         s.speaker_on = b;
     }
     if (nvs_get_u8(s_nvs, "startup_sound", &b) == ESP_OK) s.startup_sound = b;
+    if (nvs_get_u8(s_nvs, "pet_sound", &b) == ESP_OK) s.pet_sound = b;
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
@@ -184,6 +187,7 @@ void muse_settings_set_listener(muse_setting_cb_t cb)
 int muse_settings_volume(void) { return s.volume; }
 bool muse_settings_speaker_on(void) { return s.speaker_on; }
 bool muse_settings_startup_sound(void) { return s.startup_sound; }
+bool muse_settings_pet_sound(void) { return s.pet_sound; }
 int muse_settings_mic_gain(void) { return s.mic_gain; }
 int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
@@ -262,6 +266,12 @@ void muse_settings_set_startup_sound(bool on)
 {
     s.startup_sound = on;
     save_u8("startup_sound", on);
+}
+
+void muse_settings_set_pet_sound(bool on)
+{
+    s.pet_sound = on;
+    save_u8("pet_sound", on);
 }
 
 void muse_settings_set_mic_gain(int db)

@@ -64,7 +64,8 @@ int nvs_commit(int);
 #include <string.h>
 #include "muse_model.h"
 static char saved_key[512], saved_model[96];
-static uint8_t saved_provider;
+static uint8_t saved_provider, saved_pet_sound;
+static bool have_pet_sound;
 static int fail_write, fail_commit, notifications;
 int nvs_flash_init(void) { return 0; }
 int nvs_flash_erase(void) { return 0; }
@@ -74,7 +75,7 @@ int nvs_get_str(int h, const char *key, char *v, size_t *n) {
     if (!s || !s[0]) return 1;
     snprintf(v,*n,"%s",s); return 0;
 }
-int nvs_get_u8(int h, const char *key, uint8_t *v) { if(strcmp(key,"provider")) return 1; *v=saved_provider; return 0; }
+int nvs_get_u8(int h, const char *key, uint8_t *v) { if(!strcmp(key,"pet_sound") && have_pet_sound) { *v=saved_pet_sound; return 0; } if(strcmp(key,"provider")) return 1; *v=saved_provider; return 0; }
 int nvs_get_u16(int h, const char *key, uint16_t *v) { return 1; }
 int nvs_set_str(int h, const char *key, const char *v) {
     if(fail_write) return 9;
@@ -82,7 +83,7 @@ int nvs_set_str(int h, const char *key, const char *v) {
     if(!strcmp(key,"model_id1")) strcpy(saved_model,v);
     return 0;
 }
-int nvs_set_u8(int h, const char *key, uint8_t v) { if(fail_write) return 9; if(!strcmp(key,"provider")) saved_provider=v; return 0; }
+int nvs_set_u8(int h, const char *key, uint8_t v) { if(fail_write) return 9; if(!strcmp(key,"provider")) saved_provider=v; if(!strcmp(key,"pet_sound")) { have_pet_sound=true; saved_pet_sound=v; } return 0; }
 int nvs_set_u16(int h, const char *key, uint16_t v) { return 0; }
 int nvs_commit(int h) { return fail_commit ? 9 : 0; }
 bool muse_link_wifi_get(char *s, char *p) { return false; }
@@ -155,6 +156,13 @@ int main(void) {
     codec();
     history_codec();
     assert(!muse_settings_init());
+    assert(muse_settings_pet_sound()); /* enabled by default */
+    muse_settings_set_pet_sound(false);
+    assert(!muse_settings_pet_sound() && have_pet_sound && !saved_pet_sound);
+    saved_pet_sound=1; assert(!muse_settings_init()); assert(muse_settings_pet_sound());
+    saved_pet_sound=0; assert(!muse_settings_init()); assert(!muse_settings_pet_sound());
+    muse_settings_set_pet_sound(true);
+
     muse_settings_set_listener(changed);
     assert(muse_settings_provider()==MUSE_PROVIDER_MUSE);
     assert(!muse_settings_model_ready(MUSE_PROVIDER_GEMINI));

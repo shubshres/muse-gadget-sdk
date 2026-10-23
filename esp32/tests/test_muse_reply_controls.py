@@ -94,7 +94,7 @@ static lv_obj_t *s_canvas=&canvas, *s_replay_btn=&button, *s_replay_panel=&panel
 static lv_obj_t *s_replay_body=&body, *s_replay_text=&label, *s_replay_status=&status;
 static bool s_cancel_holding, s_replay_open, paused, asleep, available=true, active, face=true;
 static int64_t s_cancel_hold_started, now;
-static int mode=MUSE_MODE_SPEAKING, canceled, replayed;
+static int mode=MUSE_MODE_SPEAKING, canceled, replayed, pet_sounds, happy_taps;
 static char caption[128];
 static bool s_small;
 static int s_w, s_h;
@@ -108,7 +108,8 @@ static int64_t esp_timer_get_time(void) { return now; }
 static void muse_state_set_caption(const char *fmt, ...) { va_list a; va_start(a,fmt); vsnprintf(caption,sizeof(caption),fmt,a); va_end(a); }
 static void muse_voice_cancel_response(void) { canceled++; paused=false; active=false; }
 static void muse_voice_toggle_pause(void) { paused=!paused; }
-static void muse_state_make_happy(void) {}
+static void muse_state_make_happy(void) { happy_taps++; }
+static void muse_voice_request_pet_sound(void) { pet_sounds++; }
 static int lv_event_get_code(lv_event_t *e) { return e->code; }
 static void *lv_event_get_target(lv_event_t *e) { return e->target; }
 static void *heap_caps_malloc(size_t size, int caps) { return malloc(size); }
@@ -138,7 +139,7 @@ int main(void) {
     }
     now=1000000;
     event(LV_EVENT_PRESSED); assert(!s_cancel_holding); event(LV_EVENT_RELEASED); event(LV_EVENT_SHORT_CLICKED);
-    assert(paused);
+    assert(paused && pet_sounds==0 && happy_taps==0);
     event(LV_EVENT_PRESSED); assert(s_cancel_holding && strstr(caption,"5s"));
     now+=4000000; update_cancel_hold(); assert(strstr(caption,"1s") && !canceled);
     event(LV_EVENT_RELEASED); assert(paused && !s_cancel_holding);
@@ -147,6 +148,9 @@ int main(void) {
     event(LV_EVENT_RELEASED); update_cancel_hold(); assert(canceled==1);
     paused=true; event(LV_EVENT_PRESSED); event(LV_EVENT_PRESS_LOST); now+=5000000; update_cancel_hold(); assert(canceled==1);
     paused=false; mode=MUSE_MODE_IDLE;
+    event(LV_EVENT_SHORT_CLICKED); assert(pet_sounds==1 && happy_taps==1);
+    lv_event_t text_tap={LV_EVENT_SHORT_CLICKED,s_replay_body};
+    on_canvas_event(&text_tap); assert(pet_sounds==1 && happy_taps==1);
     update_replay(mode); assert(!s_replay_btn->hidden);
     on_replay_click(NULL); assert(s_replay_open && s_replay_btn->hidden && !s_replay_panel->hidden && replayed==1);
     assert(strstr(s_replay_text->text,"You: Question") && !strchr(s_replay_text->text,'*'));

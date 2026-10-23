@@ -108,6 +108,96 @@ int main(int argc, char **argv) {
 '''
         self.compile_run(code, range(6))
 
+    def test_pet_sound_request_only_while_idle_and_audible(self):
+        source = (MUSE / 'muse_voice.c').read_text()
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdatomic.h>
+#define MUSE_MODE_IDLE 0
+static atomic_bool s_pet_sound, s_power_off_requested;
+static bool asleep, speaker = true, chirps = true;
+static int mode, nudges;
+static int muse_state_mode(void *unused) { (void)unused; return mode; }
+static bool muse_state_asleep(void) { return asleep; }
+static bool muse_settings_speaker_on(void) { return speaker; }
+static bool muse_settings_pet_sound(void) { return chirps; }
+static void muse_state_nudge(void) { nudges++; }
+''' + function(source, 'muse_voice_request_pet_sound') + r'''
+int main(void) {
+    muse_voice_request_pet_sound();
+    assert(atomic_exchange(&s_pet_sound,false) && nudges==1);
+    muse_voice_request_pet_sound(); muse_voice_request_pet_sound();
+    assert(atomic_exchange(&s_pet_sound,false));
+    assert(!atomic_exchange(&s_pet_sound,false)); /* repeated taps do not build a queue */
+    mode=1; muse_voice_request_pet_sound(); assert(!s_pet_sound);
+    mode=0; asleep=true; muse_voice_request_pet_sound(); assert(!s_pet_sound);
+    asleep=false; speaker=false; muse_voice_request_pet_sound(); assert(!s_pet_sound);
+    speaker=true; s_power_off_requested=true;
+    muse_voice_request_pet_sound(); assert(!s_pet_sound);
+    s_power_off_requested=false; chirps=false;
+    muse_voice_request_pet_sound(); assert(!s_pet_sound);
+    chirps=true; muse_voice_request_pet_sound(); assert(s_pet_sound);
+    return 0;
+}
+'''
+        self.compile_run(code)
+
+    def test_pet_sound_variations_are_short_and_soft(self):
+        source = (MUSE / 'muse_audio.c').read_text()
+        code = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <stddef.h>
+#include <math.h>
+#include <string.h>
+#define MUSE_AUDIO_RATE 16000
+#define MUSE_AUDIO_CHUNK 320
+#define ESP_OK 0
+static size_t frames, nonzero, zero_run, pauses, first_frames;
+static int previous, crossings[3];
+static uint32_t fingerprint;
+static int muse_audio_write(const int16_t *pcm, size_t n) {
+    assert(n <= MUSE_AUDIO_CHUNK);
+    for (size_t i=0; i<n; i++) {
+        assert(pcm[i]>=-4000 && pcm[i]<=4000);
+        nonzero += pcm[i]!=0;
+        if (frames+i<first_frames && pcm[i] && previous && ((pcm[i]<0)!=(previous<0))) {
+            size_t third=(frames+i)*3/first_frames;
+            crossings[third]++;
+        }
+        if (pcm[i]) previous=pcm[i];
+        if (!pcm[i]) zero_run++;
+        else { if (zero_run >= MUSE_AUDIO_RATE / 50) pauses++; zero_run=0; }
+        fingerprint=fingerprint*31u+(uint16_t)pcm[i];
+    }
+    frames+=n;
+    return ESP_OK;
+}
+''' + function(source, 'muse_audio_pet') + r'''
+int main(void) {
+    uint32_t hashes[3];
+    const size_t lengths_ms[]={215,245,230};
+    const size_t first_ms[]={80,55,105};
+    const int expected_pauses[]={1,2,1};
+    for (unsigned variant=0; variant<6; variant++) {
+        frames=nonzero=fingerprint=zero_run=pauses=0;
+        first_frames=MUSE_AUDIO_RATE*first_ms[variant%3]/1000;
+        previous=0; memset(crossings,0,sizeof(crossings));
+        muse_audio_pet(variant);
+        assert(frames==MUSE_AUDIO_RATE*lengths_ms[variant%3]/1000 && nonzero>frames/2);
+        assert(pauses==(size_t)expected_pauses[variant%3]);
+        assert(crossings[1]>crossings[0] && crossings[1]>crossings[2]); /* pitch comes back down */
+        if (variant<3) hashes[variant]=fingerprint;
+        else assert(hashes[variant%3]==fingerprint);
+    }
+    assert(hashes[0]!=hashes[1] && hashes[1]!=hashes[2] && hashes[0]!=hashes[2]);
+    return 0;
+}
+'''
+        self.compile_run(code)
+
     def test_power_chimes_are_short_bounded_and_opposite(self):
         source = (MUSE / 'muse_audio.c').read_text()
         code = r'''

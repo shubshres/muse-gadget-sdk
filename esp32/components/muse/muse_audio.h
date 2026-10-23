@@ -64,3 +64,5 @@ void muse_audio_chirp(int rising);
 void muse_audio_startup(void);
 /* Soft descending shutdown chime, before the codecs and power turn off. */
 void muse_audio_shutdown(void);
+/* Short bird-like avatar chirp phrases; variant selects one of three patterns. */
+void muse_audio_pet(unsigned variant);

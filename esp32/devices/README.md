@@ -75,9 +75,12 @@ board about 50° from the position where it went to sleep to wake the screen;
 turn it over and hold it steady for about half a second to sleep. This also
 silences the current reply if Muse is thinking or speaking. Tap
 Muse's avatar while it is speaking to pause playback, then tap again to
-resume. The accelerometer must be present for the motion controls; the
-physical buttons continue to work if it isn't. These controls do not apply to
-the separate 1.75 model. Hold the top talk button for up to 30 seconds to
+resume. While idle, tapping the avatar shows hearts and plays one of three
+bird-like chirp phrases, following speaker mute and volume. Sound settings'
+Avatar chirps switch disables just these sounds and is saved across restarts.
+The accelerometer must be present for the motion controls; the physical
+buttons continue to work if it isn't. These controls do not apply to the
+separate 1.75 model. Hold the top talk button for up to 30 seconds to
 record; release to send. The bottom button sleeps on a short press and shuts
 down after a five-second hold, including when the hold starts asleep. A
 countdown appears while holding; releasing early cancels shutdown. A short

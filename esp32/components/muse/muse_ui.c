@@ -543,7 +543,10 @@ static void on_canvas_event(lv_event_t *e)
         break;
     case LV_EVENT_SHORT_CLICKED:
         if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING) muse_voice_toggle_pause();
-        else if (lv_event_get_target(e) == s_canvas) muse_state_make_happy();
+        else if (lv_event_get_target(e) == s_canvas) {
+            muse_state_make_happy();
+            muse_voice_request_pet_sound();
+        }
         break;
     default:
         break;
