@@ -75,7 +75,10 @@ board about 50° from the position where it went to sleep to wake the screen;
 turn it over and hold it steady for about half a second to sleep. This also
 silences the current reply if Muse is thinking or speaking. Tap
 Muse's avatar while it is speaking to pause playback, then tap again to
-resume. While idle, tapping the avatar shows hearts and plays one of three
+resume. Hold the screen for three seconds while thinking or paused to cancel
+the request; release early or swipe pages to stop the countdown. While idle,
+tap or rub the avatar up/down or with small back-and-forth strokes for hearts
+and one of three
 bird-like chirp phrases, following speaker mute and volume. Sound settings'
 Avatar chirps switch disables just these sounds and is saved across restarts.
 The accelerometer must be present for the motion controls; the physical

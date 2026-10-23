@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Plain reply text, replay geometry/controls, and stopped-exchange retention."""
 import os
+import re
 from pathlib import Path
 import shlex
 import subprocess
@@ -59,6 +60,7 @@ int main(void) {
 
     def test_round_window_and_pause_hold_replay_controls(self):
         source = (MUSE / 'muse_ui.c').read_text()
+        limits = '\n'.join(re.findall(r'^#define (?:CANCEL_HOLD_US|PET_RUB_INTERVAL_US) .*', source, re.M))
         gestures = source[source.index('static void clear_cancel_hold('):source.index('static const lv_font_t *font_pick')]
         replay = source[source.index('static void on_replay_close('):source.index('static void build_replay(')]
         tick = source[source.index('static void update_replay('):source.index('static volatile bool s_snapshot;')]
@@ -72,7 +74,8 @@ int main(void) {
 #include <string.h>
 #include <math.h>
 #include "muse_text.h"
-#define CANCEL_HOLD_US 5000000LL
+''' + limits + r'''
+#define MUSE_CAPTION_MAX 400
 #define MUSE_LOW_MEM 0
 #define MUSE_REPLAY_TEXT_CAP 17408
 #define MUSE_BIG_CAPS 0
@@ -86,14 +89,21 @@ int main(void) {
 #define LV_EVENT_RELEASED 2
 #define LV_EVENT_PRESS_LOST 3
 #define LV_EVENT_SHORT_CLICKED 4
+#define LV_EVENT_PRESSING 5
 typedef int muse_mode_t;
 typedef struct { bool hidden; char text[512]; } lv_obj_t;
 typedef struct { int code; void *target; } lv_event_t;
-static lv_obj_t canvas, button, panel, body, label, status;
-static lv_obj_t *s_canvas=&canvas, *s_replay_btn=&button, *s_replay_panel=&panel;
+typedef struct { int x,y; } lv_point_t;
+typedef struct { int unused; } lv_indev_t;
+static lv_indev_t touch_device;
+static lv_point_t touch_point;
+static lv_obj_t *scroll_obj;
+static lv_obj_t canvas, face_obj, button, panel, body, label, status;
+static lv_obj_t *s_face=&face_obj, *s_canvas=&canvas, *s_replay_btn=&button, *s_replay_panel=&panel;
 static lv_obj_t *s_replay_body=&body, *s_replay_text=&label, *s_replay_status=&status;
-static bool s_cancel_holding, s_replay_open, paused, asleep, available=true, active, face=true;
+static bool s_cancel_holding, s_cancel_thinking, s_replay_open, paused, asleep, available=true, active, face=true;
 static int64_t s_cancel_hold_started, now;
+static char s_cancel_saved_caption[MUSE_CAPTION_MAX];
 static int mode=MUSE_MODE_SPEAKING, canceled, replayed, pet_sounds, happy_taps;
 static char caption[128];
 static bool s_small;
@@ -109,7 +119,14 @@ static void muse_state_set_caption(const char *fmt, ...) { va_list a; va_start(a
 static void muse_voice_cancel_response(void) { canceled++; paused=false; active=false; }
 static void muse_voice_toggle_pause(void) { paused=!paused; }
 static void muse_state_make_happy(void) { happy_taps++; }
+static void muse_state_poke(void) {}
 static void muse_voice_request_pet_sound(void) { pet_sounds++; }
+static bool muse_state_caption(char *out, size_t cap, uint32_t *version) {
+    (void)version; snprintf(out,cap,"%s",caption); return true;
+}
+static lv_indev_t *lv_indev_active(void) { return &touch_device; }
+static void lv_indev_get_point(lv_indev_t *indev, lv_point_t *point) { (void)indev; *point=touch_point; }
+static lv_obj_t *lv_indev_get_scroll_obj(lv_indev_t *indev) { (void)indev; return scroll_obj; }
 static int lv_event_get_code(lv_event_t *e) { return e->code; }
 static void *lv_event_get_target(lv_event_t *e) { return e->target; }
 static void *heap_caps_malloc(size_t size, int caps) { return malloc(size); }
@@ -140,19 +157,66 @@ int main(void) {
     now=1000000;
     event(LV_EVENT_PRESSED); assert(!s_cancel_holding); event(LV_EVENT_RELEASED); event(LV_EVENT_SHORT_CLICKED);
     assert(paused && pet_sounds==0 && happy_taps==0);
-    event(LV_EVENT_PRESSED); assert(s_cancel_holding && strstr(caption,"5s"));
-    now+=4000000; update_cancel_hold(); assert(strstr(caption,"1s") && !canceled);
+    event(LV_EVENT_PRESSED); assert(s_cancel_holding && strstr(caption,"3s"));
+    now+=2000000; update_cancel_hold(); assert(strstr(caption,"1s") && !canceled);
     event(LV_EVENT_RELEASED); assert(paused && !s_cancel_holding);
     now+=10000000; update_cancel_hold(); assert(!canceled);
-    event(LV_EVENT_PRESSED); now+=5000000; update_cancel_hold(); assert(canceled==1 && !s_cancel_holding);
+    event(LV_EVENT_PRESSED); now+=2999999; update_cancel_hold(); assert(!canceled);
+    now++; update_cancel_hold(); assert(canceled==1 && !s_cancel_holding);
     event(LV_EVENT_RELEASED); update_cancel_hold(); assert(canceled==1);
-    paused=true; event(LV_EVENT_PRESSED); event(LV_EVENT_PRESS_LOST); now+=5000000; update_cancel_hold(); assert(canceled==1);
+    paused=true; event(LV_EVENT_PRESSED); event(LV_EVENT_PRESS_LOST); now+=3000000; update_cancel_hold(); assert(canceled==1);
     paused=false; mode=MUSE_MODE_IDLE;
     event(LV_EVENT_SHORT_CLICKED); assert(pet_sounds==1 && happy_taps==1);
     lv_event_t text_tap={LV_EVENT_SHORT_CLICKED,s_replay_body};
     on_canvas_event(&text_tap); assert(pet_sounds==1 && happy_taps==1);
+    /* A straight horizontal page swipe must not pet or claim the gesture. */
+    touch_point=(lv_point_t){100,100}; event(LV_EVENT_PRESSED);
+    now+=100000; event(LV_EVENT_PRESSING); assert(pet_sounds==1);
+    touch_point.x=102; event(LV_EVENT_PRESSING); assert(pet_sounds==1); /* jitter */
+    touch_point.x=160; event(LV_EVENT_PRESSING); assert(pet_sounds==1);
+    scroll_obj=&panel; touch_point.x=180; event(LV_EVENT_PRESSING);
+    assert(pet_sounds==1); event(LV_EVENT_PRESS_LOST); scroll_obj=NULL;
+    /* Up/down rubbing refreshes the hearts, with paced chirps. */
+    touch_point=(lv_point_t){100,100}; event(LV_EVENT_PRESSED);
+    touch_point.y=120; event(LV_EVENT_PRESSING); assert(pet_sounds==2 && happy_taps==2);
+    now+=100000; touch_point.y=100; event(LV_EVENT_PRESSING); assert(pet_sounds==2);
+    now+=400000; touch_point.y=120; event(LV_EVENT_PRESSING); assert(pet_sounds==3);
+    event(LV_EVENT_RELEASED); event(LV_EVENT_SHORT_CLICKED); assert(pet_sounds==3);
+    now+=500000; touch_point.y=140; event(LV_EVENT_PRESSING); assert(pet_sounds==3);
+    /* Small horizontal reversals below the page-scroll threshold also pet. */
+    touch_point=(lv_point_t){100,100}; event(LV_EVENT_PRESSED);
+    touch_point.x=106; event(LV_EVENT_PRESSING);
+    touch_point.x=100; event(LV_EVENT_PRESSING); assert(pet_sounds==3);
+    touch_point.x=106; event(LV_EVENT_PRESSING); assert(pet_sounds==4);
+    scroll_obj=&panel; now+=500000; touch_point.x=100; event(LV_EVENT_PRESSING);
+    assert(pet_sounds==4); event(LV_EVENT_PRESS_LOST); scroll_obj=NULL;
+    touch_point=(lv_point_t){100,100}; event(LV_EVENT_PRESSED);
+    mode=MUSE_MODE_LISTENING; touch_point.y=140; event(LV_EVENT_PRESSING);
+    assert(pet_sounds==4); event(LV_EVENT_RELEASED); mode=MUSE_MODE_IDLE;
+
+    /* Thinking holds work on the screen background too, without pausing first. */
+    lv_event_t background={LV_EVENT_PRESSED,s_face};
+    mode=MUSE_MODE_THINKING; strcpy(caption,"WORKING..."); on_canvas_event(&background);
+    assert(s_cancel_holding && strstr(caption,"3s"));
+    now+=2000000; update_cancel_hold(); assert(canceled==1 && strstr(caption,"1s"));
+    background.code=LV_EVENT_RELEASED; on_canvas_event(&background);
+    assert(!s_cancel_holding && !strcmp(caption,"WORKING..."));
+    background.code=LV_EVENT_PRESSED; on_canvas_event(&background);
+    now+=2999999; update_cancel_hold(); assert(canceled==1);
+    now++; update_cancel_hold(); assert(canceled==2 && !s_cancel_holding);
+    event(LV_EVENT_RELEASED); update_cancel_hold(); assert(canceled==2);
+    mode=MUSE_MODE_THINKING; event(LV_EVENT_PRESSED);
+    scroll_obj=&panel; event(LV_EVENT_PRESSING); scroll_obj=NULL;
+    now+=3000000; update_cancel_hold(); assert(canceled==2 && !s_cancel_holding);
+    event(LV_EVENT_PRESSED); mode=MUSE_MODE_SPEAKING;
+    now+=3000000; update_cancel_hold(); assert(canceled==2 && !s_cancel_holding);
+    event(LV_EVENT_RELEASED); mode=MUSE_MODE_IDLE;
+
     update_replay(mode); assert(!s_replay_btn->hidden);
     on_replay_click(NULL); assert(s_replay_open && s_replay_btn->hidden && !s_replay_panel->hidden && replayed==1);
+    mode=MUSE_MODE_SPEAKING; paused=true; update_replay(mode);
+    assert(strstr(s_replay_status->text,"hold 3s"));
+    paused=false; mode=MUSE_MODE_IDLE;
     assert(strstr(s_replay_text->text,"You: Question") && !strchr(s_replay_text->text,'*'));
     update_replay(mode); assert(s_replay_open && s_replay_btn->hidden); /* ticking cannot unhide the replay button */
     on_replay_click(NULL); assert(s_replay_open && replayed==1); /* no toggle-close path */

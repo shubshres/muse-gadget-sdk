@@ -64,7 +64,8 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
-#define CANCEL_HOLD_US (5 * 1000000LL)
+#define CANCEL_HOLD_US (3 * 1000000LL)
+#define PET_RUB_INTERVAL_US 400000LL
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -143,6 +144,8 @@ static lv_obj_t *s_replay_btn;
 static lv_obj_t *s_replay_panel;
 static lv_obj_t *s_replay_text, *s_replay_body, *s_replay_status;
 static bool s_cancel_holding;
+static bool s_cancel_thinking;
+static char s_cancel_saved_caption[MUSE_CAPTION_MAX];
 static int64_t s_cancel_hold_started;
 static bool s_replay_open;
 static lv_obj_t *s_aux_icon;
@@ -502,16 +505,22 @@ static void build_button_icons(lv_obj_t *face)
 
 static void clear_cancel_hold(void)
 {
-    if (s_cancel_holding && muse_voice_paused())
-        muse_state_set_caption("PAUSED - TAP MUSE TO RESUME");
+    if (s_cancel_holding) {
+        if (s_cancel_thinking && muse_state_mode(NULL) == MUSE_MODE_THINKING)
+            muse_state_set_caption("%s", s_cancel_saved_caption);
+        else if (!s_cancel_thinking && muse_voice_paused())
+            muse_state_set_caption("PAUSED - TAP MUSE TO RESUME");
+    }
     s_cancel_holding = false;
 }
 
 static void update_cancel_hold(void)
 {
     if (!s_cancel_holding) return;
-    if (muse_state_asleep() || !muse_ui_face_active() || !muse_voice_paused() ||
-        muse_state_mode(NULL) != MUSE_MODE_SPEAKING) {
+    muse_mode_t mode = muse_state_mode(NULL);
+    bool eligible = s_cancel_thinking ? mode == MUSE_MODE_THINKING :
+                    mode == MUSE_MODE_SPEAKING && muse_voice_paused();
+    if (muse_state_asleep() || !muse_ui_face_active() || !eligible) {
         clear_cancel_hold();
         return;
     }
@@ -525,27 +534,93 @@ static void update_cancel_hold(void)
     }
 }
 
-/* Short taps pause/resume. A hold only cancels an already paused response;
+static void pet_avatar(void)
+{
+    muse_state_poke();
+    muse_state_make_happy();
+    muse_voice_request_pet_sound();
+}
+
+/* Rubbing pets the idle avatar. Short taps pause/resume a reply. A hold
+ * cancels a thinking request or an already paused response.
  * LVGL won't send SHORT_CLICKED after a hold, so release cannot resume it. */
 static void on_canvas_event(lv_event_t *e)
 {
+    static bool pet_tracking, pet_rubbed, pet_reversed;
+    static lv_point_t pet_last, pet_origin;
+    static int pet_distance, pet_direction;
+    static int64_t pet_feedback_us;
+    muse_mode_t mode = muse_state_mode(NULL);
     switch (lv_event_get_code(e)) {
     case LV_EVENT_PRESSED:
-        if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING && muse_voice_paused()) {
+        pet_tracking = pet_rubbed = pet_reversed = false;
+        pet_distance = pet_direction = 0;
+        if (lv_event_get_target(e) == s_canvas && mode == MUSE_MODE_IDLE &&
+            !muse_state_asleep() && muse_ui_face_active()) {
+            lv_indev_t *indev = lv_indev_active();
+            if (indev) {
+                lv_indev_get_point(indev, &pet_last);
+                pet_origin = pet_last;
+                pet_tracking = true;
+                pet_feedback_us = esp_timer_get_time() - PET_RUB_INTERVAL_US;
+            }
+        }
+        if ((mode == MUSE_MODE_THINKING || (mode == MUSE_MODE_SPEAKING && muse_voice_paused())) &&
+            !muse_state_asleep() && muse_ui_face_active()) {
+            s_cancel_thinking = mode == MUSE_MODE_THINKING;
+            uint32_t version = UINT32_MAX;
+            muse_state_caption(s_cancel_saved_caption, sizeof(s_cancel_saved_caption), &version);
             s_cancel_holding = true;
             s_cancel_hold_started = esp_timer_get_time();
             update_cancel_hold();
         }
         break;
+    case LV_EVENT_PRESSING: {
+        lv_indev_t *indev = lv_indev_active();
+        if (s_cancel_holding && indev && lv_indev_get_scroll_obj(indev)) clear_cancel_hold();
+        if (!pet_tracking) break;
+        if (!indev || lv_indev_get_scroll_obj(indev) || muse_state_asleep() || !muse_ui_face_active() ||
+            muse_state_mode(NULL) != MUSE_MODE_IDLE) {
+            pet_tracking = false;
+            break;
+        }
+        lv_point_t point;
+        lv_indev_get_point(indev, &point);
+        int dx = point.x - pet_last.x, dy = point.y - pet_last.y;
+        int distance = abs(dx) + abs(dy);
+        if (distance < 3) break;   /* reject touch jitter; slow strokes still accumulate */
+        int direction = (abs(dx) >= abs(dy) ? dx : dy) > 0 ? 1 : -1;
+        if (pet_direction && direction != pet_direction) pet_reversed = true;
+        pet_direction = direction;
+        pet_last = point;
+        pet_distance += distance;
+        /* Leave ordinary horizontal page swipes entirely to LVGL. Petting is
+         * vertical movement or a short back-and-forth stroke before scrolling. */
+        bool vertical = abs(point.y - pet_origin.y) > 2 * abs(point.x - pet_origin.x);
+        if ((vertical || pet_reversed) && pet_distance >= (s_small ? 8 : 18)) {
+            pet_rubbed = true;
+            int64_t now = esp_timer_get_time();
+            if (now - pet_feedback_us >= PET_RUB_INTERVAL_US) {
+                pet_avatar();
+                pet_feedback_us = now;
+                pet_distance = 0;
+            }
+        }
+        break;
+    }
     case LV_EVENT_RELEASED:
     case LV_EVENT_PRESS_LOST:
+        pet_tracking = false;
         clear_cancel_hold();
         break;
     case LV_EVENT_SHORT_CLICKED:
-        if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING) muse_voice_toggle_pause();
+        if (pet_rubbed) {
+            pet_rubbed = false;   /* don't add a tap or pause a new reply after rubbing */
+            break;
+        }
+        if (mode == MUSE_MODE_SPEAKING && lv_event_get_target(e) != s_face) muse_voice_toggle_pause();
         else if (lv_event_get_target(e) == s_canvas) {
-            muse_state_make_happy();
-            muse_voice_request_pet_sound();
+            pet_avatar();
         }
         break;
     default:
@@ -1030,6 +1105,7 @@ static void build_screen(void)
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
         s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        lv_obj_add_event_cb(s_face, on_canvas_event, LV_EVENT_ALL, NULL);
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
@@ -1750,7 +1826,8 @@ static void update_replay(muse_mode_t mode)
         if (s_cancel_holding) {
             int64_t left = CANCEL_HOLD_US - (esp_timer_get_time() - s_cancel_hold_started);
             snprintf(status, sizeof(status), "Canceling in %ds...", (int)((left + 999999) / 1000000));
-        } else if (muse_voice_paused()) snprintf(status, sizeof(status), "Paused - hold 5s to cancel");
+        } else if (muse_voice_paused()) snprintf(status, sizeof(status), "Paused - hold %ds to cancel",
+                                               (int)(CANCEL_HOLD_US / 1000000));
         if (strcmp(status, lv_label_get_text(s_replay_status))) lv_label_set_text(s_replay_status, status);
     }
 }
