@@ -47,8 +47,10 @@ changes, or **Settings → Muse → New conversation**. It does not use Muse's V
 personal memory or tools. Sending recent history uses additional provider
 input tokens and quota. Replies are requested with a
 2,048-token output budget; the device accepts at most 64 KiB of JSON and
-16 KiB of reply text. Voice captions and playback keep the existing 1,023-byte
-caption limit. Typed USB chat (`python3 tools/muse/chat.py "hello"`) prints the
+16 KiB of reply text. Voice captions retain that full text, and Azure playback
+splits it into chunks of at most 1,023 bytes at word or UTF-8 boundaries.
+Playback progress and a paused/full output buffer extend the voice deadline;
+a stalled request still times out. Typed USB chat (`python3 tools/muse/chat.py "hello"`) prints the
 full accepted text. No API calls are made just by selecting a provider.
 
 Push-to-talk uses the saved Azure Speech key and region for English (`en-US`)

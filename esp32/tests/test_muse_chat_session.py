@@ -27,6 +27,7 @@ class ChatSession(unittest.TestCase):
         speech = source[source.index('static void start_tts(void)'):source.index('static void tts_data(')]
         caption = source[source.index('extern "C" bool muse_hatch_turn_caption('):
                          source.index('extern "C" size_t muse_hatch_turn_reply_text(')]
+        deadlines = source[source.index('static void check_turn(void)'):source.index('/* ---- Inbound dispatch ---- */')]
         reset = source[source.index('static bool turn_start('):source.index('static void turn_begin(')]
         reply_text = source[source.index('extern "C" size_t muse_hatch_turn_reply_text('):
                             source.index('extern "C" size_t muse_hatch_turn_read(')]
@@ -37,11 +38,13 @@ class ChatSession(unittest.TestCase):
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <string>
 #include "host_compat.h"
 #include "cJSON.h"
 #include "minimp3.h"
 #include "muse_chat_priv.h"
 #define ESP_LOGI(...) ((void)0)
+#define ESP_LOGW(...) ((void)0)
 ''' + constants + types + r'''
 static turn_t s_turn;
 static char s_reply_shown[EV_TEXT];
@@ -50,7 +53,13 @@ static int captions, console_events;
 static size_t caption_at;
 enum mark_t { M_TEXT, M_DONE };
 static void mark(mark_t) {}
-static int64_t now_us() { return 12345; }
+static int64_t clock_us = 12345;
+static int64_t now_us() { return clock_us; }
+static int s_out;
+static size_t output_room = 4096;
+static size_t xStreamBufferSpacesAvailable(int) { return output_room; }
+static void log_marks() {}
+static void on_dictation_end(bool) {}
 static void emit(muse_hatch_ev_t type, const char *) {
     if (type == MUSE_HATCH_EV_REPLY) captions++;
 }
@@ -62,10 +71,11 @@ bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap) {
 }
 static void turn_finish() { s_turn.phase = P_IDLE; }
 static void turn_fail(const char *) { turn_finish(); }
+static void turn_done(bool) { turn_finish(); }
 static bool ensure_connected() { return true; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
-''' + reset + handlers + speech + caption + reply_text + r'''
+''' + reset + handlers + speech + deadlines + caption + reply_text + r'''
 static void begin(bool typed = false) {
     assert(turn_start(s_turn.gen + 1, typed));
     s_turn.phase = P_WAIT_REPLY;
@@ -209,6 +219,77 @@ static void segment_caption() {
     assert(muse_hatch_turn_caption(50, out, sizeof(out)) && caption_at == 3);
     assert(muse_hatch_turn_caption(150, out, sizeof(out)) && caption_at == 10);
 }
+
+static void long_reply(bool streaming) {
+    static char textbuf[MAX_MSGS * TEXT_MAX];
+    s_turn.texts = textbuf;
+    std::string samples[3];
+    for (int i = 0; i < 1600; i++) samples[0] += "Aha! Yes. ";
+    samples[1] = std::string(TEXT_MAX - 1, 'z'); /* no word boundary before the limit */
+    while (samples[2].size() + strlen("こんにちは世界🌍 ") < TEXT_MAX)
+        samples[2] += "こんにちは世界🌍 ";
+    for (const auto &full : samples) {
+        begin();
+        event("delta.message_start", "reply", "note");
+        msg_t &m = s_turn.msgs[0];
+        std::string spoken;
+        auto drain = [&]() {
+            while (m.tts == TTS_QUEUED) {
+                assert(m.nsegments < TTS_SEGMENTS);
+                start_tts();
+                assert(m.tts == TTS_ACTIVE);
+                const auto &seg = m.segments[m.nsegments - 1];
+                assert(seg.text_end > seg.text_start);
+                assert(seg.text_end - seg.text_start <= TTS_CHUNK_MAX);
+                assert(seg.text_end == full.size() || ((unsigned char)full[seg.text_end] & 0xc0) != 0x80);
+                spoken.append(full, seg.text_start, seg.text_end - seg.text_start);
+                s_turn.pcm_out += 100;
+                finish_tts_segment();
+            }
+        };
+        if (streaming) {
+            for (size_t off = 0; off < full.size(); off += 137) {
+                event("delta.text_append", "reply", "", full.substr(off,137).c_str());
+                drain();
+            }
+            event("delta.message_done", "reply");
+        } else {
+            event("message.assistant", "reply", "note", full.c_str());
+        }
+        drain();
+        assert(m.len == full.size() && strlen(textbuf) == full.size());
+        assert(m.tts == TTS_FINISHED && m.tts_offset == full.size());
+        assert(spoken == full); /* every byte reaches a speech segment, including the tail */
+    }
+}
+static void playback_deadline() {
+    begin();
+    s_turn.start_us = 1;
+    s_turn.nmsgs = 1;
+    s_turn.msgs[0].done = true;
+    s_turn.msgs[0].tts = TTS_ACTIVE;
+    clock_us = 2 * TURN_CAP_US;
+    s_turn.last_audio_us = clock_us - 1000;
+    s_turn.pcm_out = 100;
+    check_turn();
+    assert(s_turn.phase == P_WAIT_REPLY); /* long reply is still making progress */
+    clock_us += TURN_CAP_US + 1;
+    output_room = 0;
+    check_turn();
+    assert(s_turn.phase == P_WAIT_REPLY); /* paused/backpressured output isn't a stalled request */
+    output_room = 4096;
+    clock_us += TURN_CAP_US + 1;
+    check_turn();
+    assert(s_turn.phase == P_IDLE); /* no progress and no backpressure still times out */
+
+    begin();
+    s_turn.start_us = 1;
+    s_turn.nmsgs = 0;
+    clock_us += TURN_CAP_US;
+    check_turn();
+    assert(s_turn.phase == P_IDLE); /* no reply retains its deadline */
+}
+
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
@@ -218,6 +299,9 @@ int main(int argc, char **argv) {
     case 3: replay_text(); break;
     case 4: early_speech(); break;
     case 5: segment_caption(); break;
+    case 6: long_reply(false); break;
+    case 7: long_reply(true); break;
+    case 8: playback_deadline(); break;
     default: return 2;
     }
 }
@@ -259,3 +343,12 @@ int main(int argc, char **argv) {
 
     def test_caption_tracks_the_audio_segment_being_played(self):
         self.run_case(5)
+
+    def test_long_replies_preserve_all_text_in_bounded_utf8_speech_chunks(self):
+        self.run_case(6)
+
+    def test_long_streamed_replies_cannot_exhaust_speech_segment_slots(self):
+        self.run_case(7)
+
+    def test_playback_progress_and_pause_extend_voice_deadline(self):
+        self.run_case(8)

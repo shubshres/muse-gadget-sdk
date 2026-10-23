@@ -34,7 +34,7 @@
 
 static const char *TAG = "muse_azure_tts";
 #define MAX_MP3 (512 * 1024)
-#define MAX_TEXT 1023
+#define MAX_TEXT MUSE_AZURE_TTS_TEXT_MAX
 
 typedef struct {
     muse_azure_tts_result_t result;
@@ -155,7 +155,7 @@ bool muse_azure_tts_init(void)
 
 bool muse_azure_tts_start(uint32_t generation, int message, const char *text)
 {
-    if (!s_lock || !s_results || !text || !text[0]) return false;
+    if (!s_lock || !s_results || !text || !text[0] || strlen(text) > MAX_TEXT) return false;
     xSemaphoreTake(s_lock, portMAX_DELAY);
     if (s_busy) { xSemaphoreGive(s_lock); return false; }
     s_busy = true;

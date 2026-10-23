@@ -111,7 +111,9 @@ static const char *TAG = "muse_chat_session";
 #define MP3_POLL_ROOM (SCRATCH + 8192)     /* stop reading the socket below this much MP3 room */
 static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP3 buffer empty");
 #define EV_TEXT 72
-#define TEXT_MAX 1024                      /* a message's text, for captions timed to its speech */
+#define TEXT_MAX (16 * 1024 + 1)           /* retain the full accepted direct-model reply */
+#define TTS_CHUNK_MAX 1023                 /* Azure Speech request text limit */
+#define TTS_TAIL_MIN 512                   /* minimum non-final tail chunk */
 #define SPEECH_CHARS_PER_S 14              /* until the speech's length is known */
 #define TEXT_CHARS_PER_S 16                /* speaker off: reading pace, a little over speech */
 #define TEXT_HOLD_S 2                      /* speaker off: how long a message's last lines stay up */
@@ -214,7 +216,10 @@ enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY };
 
 enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
-#define TTS_SEGMENTS 16
+#define TTS_SEGMENTS 64
+/* Reserve enough bounded chunks for even a full reply of short sentences. */
+#define TTS_TAIL_SLOTS ((TEXT_MAX - 1 + TTS_TAIL_MIN - 1) / TTS_TAIL_MIN)
+static_assert(TTS_SEGMENTS > TTS_TAIL_SLOTS, "No slots left for early speech");
 struct tts_segment_t {
     uint16_t text_start, text_end;
     uint32_t pcm_start, pcm_end;   /* pcm_end is set when the segment has drained */
@@ -244,6 +249,7 @@ struct turn_t {
     bool end_requested, end_sent, chat_posted, acked;
     int64_t dict_id, chat_id;
     int64_t start_us, end_sent_us, chat_us, last_event_us, last_content_us;
+    int64_t last_audio_us;   /* playback progress extends the voice deadline */
     uint64_t sent24;         /* 24 kHz frames sent to dictation */
     resampler_t up;
     uint8_t *chunk;          /* DICT_CHUNK_BYTES, plus the note's tail */
@@ -275,8 +281,8 @@ struct turn_t {
     int down_rate;
 };
 
-/* 10 KB, most of it the MP3 decoder: in PSRAM on boards that let static data go
- * there (the AIPI), so Wi-Fi setup and TLS have the internal RAM. */
+/* 10 KB of decoder scratch plus speech metadata: in PSRAM on boards that let
+ * static data go there, so Wi-Fi setup and TLS have the internal RAM. */
 EXT_RAM_BSS_ATTR static turn_t s_turn;
 
 /* Turn milestones, logged together when the turn ends. */
@@ -1419,26 +1425,43 @@ static void append_text(msg_t &m, const char *text)
     strlcat(m.tail, text, sizeof(m.tail));
 }
 
-/* Only send text that cannot change as more deltas arrive. A sentence can
- * start immediately; a long sentence is cut at a complete word. Keep one
- * segment slot for the final tail if the reply has many short sentences. */
+/* A complete word near the chunk's end, or a UTF-8 boundary for a very long
+ * word. Tail chunks stay large enough to fit the remaining segment slots. */
+static size_t bounded_tts_end(const char *text, size_t start, size_t end)
+{
+    size_t word_end = 0;
+    for (size_t i = start; i < end; i++) {
+        if (i + 1 - start >= TTS_TAIL_MIN && (text[i] == ' ' || text[i] == '\n')) word_end = i + 1;
+    }
+    if (word_end) return word_end;
+    while (end > start && ((unsigned char)text[end] & 0xc0) == 0x80) end--;
+    return end;
+}
+
+/* Start at stable sentence/word boundaries. Reserve enough slots for the
+ * final text without ever handing Azure a chunk it would truncate. */
 static size_t next_tts_end(const msg_t &m)
 {
     if (!s_turn.texts) return m.done ? (m.len < UINT16_MAX ? m.len : UINT16_MAX) : 0;
     const char *text = s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX;
     size_t len = strlen(text), start = m.tts_offset;
     if (start >= len) return 0;
-    if (m.nsegments >= TTS_SEGMENTS - 1) return m.done ? len : 0;
+    size_t limit = len - start > TTS_CHUNK_MAX ? start + TTS_CHUNK_MAX : len;
+    if (m.nsegments >= TTS_SEGMENTS - TTS_TAIL_SLOTS) {
+        if (!m.done && len - start < TTS_CHUNK_MAX) return 0;
+        return limit == len && m.done ? len : bounded_tts_end(text, start, limit);
+    }
     size_t word_end = 0;
-    for (size_t i = start; i < len; i++) {
+    for (size_t i = start; i < limit; i++) {
         size_t count = i + 1 - start;
         bool boundary = text[i] == '\n' || (i + 1 < len && (text[i + 1] == ' ' || text[i + 1] == '\n'));
         if (count >= 8 && (text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n') && boundary) {
-            return i + 1 + (text[i] != '\n' && i + 1 < len ? 1 : 0);
+            return i + 1 + (text[i] != '\n' && i + 1 < limit ? 1 : 0);
         }
         if (count >= 64 && (text[i] == ' ' || text[i] == '\n')) word_end = i + 1;
         if (count >= 180 && word_end) return word_end;
     }
+    if (len - start >= TTS_CHUNK_MAX) return bounded_tts_end(text, start, limit);
     return m.done ? len : 0;
 }
 
@@ -1630,7 +1653,8 @@ static void start_tts(void)
             s_turn.mp3_ended = false;
             s_turn.kbps = s_turn.down_rate = 0;
             mp3dec_init(&s_turn.dec);
-            char piece[TEXT_MAX];
+            static_assert(TTS_CHUNK_MAX <= MUSE_AZURE_TTS_TEXT_MAX, "Speech chunk exceeds Azure input");
+            char piece[TTS_CHUNK_MAX + 1];
             const char *full = s_turn.texts + i * TEXT_MAX;
             size_t n = end - m.tts_offset;
             memcpy(piece, full + m.tts_offset, n);
@@ -1739,6 +1763,7 @@ static void pace_silently(void)
         uint32_t n = end - s_turn.pcm_out < 256 ? end - s_turn.pcm_out : 256;
         xStreamBufferSend(s_out, zeros, n * sizeof(int16_t), 0);
         s_turn.pcm_out += n;
+        s_turn.last_audio_us = now_us();
     }
     if (s_turn.pcm_out >= end) {
         finish_tts_segment();
@@ -1792,6 +1817,7 @@ static void decode(void)
             xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
         }
         s_turn.pcm_out += n;
+        s_turn.last_audio_us = now_us();
         s_turn.kbps = info.bitrate_kbps;
     }
     if (off) {
@@ -1815,7 +1841,11 @@ static void check_turn(void)
         return;
     }
     bool text = s_turn.text;
-    if (t - s_turn.start_us > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
+    /* A long answer or a paused/full output buffer is not a stalled request. */
+    if (!text && s_turn.pcm_out && xStreamBufferSpacesAvailable(s_out) < 256 * sizeof(int16_t))
+        s_turn.last_audio_us = t;
+    int64_t active_us = !text && s_turn.last_audio_us > s_turn.start_us ? s_turn.last_audio_us : s_turn.start_us;
+    if (t - active_us > (text ? TEXT_TURN_CAP_US : TURN_CAP_US)) {
         ESP_LOGW(TAG, "turn hit the time cap");
         /* A voice turn that waited out the cap on a busy agent got no reply at all. */
         if (!text && !s_turn.nmsgs) {

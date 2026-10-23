@@ -28,6 +28,8 @@ typedef struct {
     int status;
 } muse_azure_tts_result_t;
 
+#define MUSE_AZURE_TTS_TEXT_MAX 1023
+
 bool muse_azure_tts_init(void);
 bool muse_azure_tts_start(uint32_t generation, int message, const char *text);
 bool muse_azure_tts_poll(muse_azure_tts_result_t *result);
