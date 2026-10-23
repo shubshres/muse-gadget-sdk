@@ -25,7 +25,7 @@ static const char *TAG = "muse_pmu";
 
 #define REG_STATUS1 0x00        /* bit5 VBUS good, bit3 battery present */
 #define REG_STATUS2 0x01        /* bits[6:5] 01 = charging */
-#define REG_COMMON_CFG 0x10     /* bit0 = soft power-off */
+#define REG_COMMON_CFG 0x10     /* bit2 = forced 16 s key shutdown, bit0 = soft power-off */
 #define REG_PWROFF_EN 0x22      /* bit1 = PWRON held past OFFLEVEL cuts power */
 #define REG_IRQ_LEVEL 0x27      /* bits[3:2] power-key hold-to-off time */
 #define REG_ADC_ENABLE 0x30     /* bit0 = battery voltage */
@@ -50,6 +50,7 @@ static const char *TAG = "muse_pmu";
 /* bits[3:2] = 11 -> 10 s for boards that keep hardware key shutdown enabled. */
 #define PKEY_OFF_10S (3u << 2)
 #define PKEY_SHUTDOWN_ENABLE (1u << 1)
+#define PKEY_FORCE_SHUTDOWN_ENABLE (1u << 2)
 
 static i2c_master_dev_handle_t s_dev;
 
@@ -109,7 +110,25 @@ esp_err_t muse_pmu_set_key_shutdown(bool enable)
     ESP_RETURN_ON_ERROR(rd(REG_PWROFF_EN, &v), TAG, "read key shutdown");
     uint8_t next = enable ? v | PKEY_SHUTDOWN_ENABLE : v & ~PKEY_SHUTDOWN_ENABLE;
     ESP_RETURN_ON_ERROR(wr(REG_PWROFF_EN, next), TAG, "set key shutdown");
-    ESP_LOGI(TAG, "hardware PWR key shutdown %s", enable ? "enabled" : "disabled");
+    if (!enable) {
+        /* AXP2101 datasheet, REG 10 bit2: a second, independent 16 s cutoff.
+         * REG 22 bit1 alone cannot make PWR safe for minute-long voice notes.
+         * Bits 1:0 are self-clearing reset/off commands; never replay them.
+         * https://raw.githubusercontent.com/lewisxhe/XPowersLib/master/src/XPowersAXP2101.hpp
+         * implements this as disablePwronShutPMIC(). */
+        uint8_t common;
+        ESP_RETURN_ON_ERROR(rd(REG_COMMON_CFG, &common), TAG, "read forced key shutdown");
+        ESP_RETURN_ON_ERROR(wr(REG_COMMON_CFG, common & ~(PKEY_FORCE_SHUTDOWN_ENABLE | 0x03)),
+                            TAG, "disable forced key shutdown");
+        ESP_RETURN_ON_ERROR(rd(REG_COMMON_CFG, &common), TAG, "verify forced key shutdown");
+        ESP_RETURN_ON_FALSE(!(common & PKEY_FORCE_SHUTDOWN_ENABLE), ESP_FAIL, TAG,
+                            "forced 16 s key shutdown stayed enabled");
+    }
+    ESP_RETURN_ON_ERROR(rd(REG_PWROFF_EN, &v), TAG, "verify key shutdown");
+    ESP_RETURN_ON_FALSE(!!(v & PKEY_SHUTDOWN_ENABLE) == enable, ESP_FAIL, TAG,
+                        "key shutdown setting did not stick");
+    ESP_LOGI(TAG, "hardware PWR key shutdown %s%s", enable ? "enabled" : "disabled",
+             enable ? "" : " (normal and forced 16 s cutoffs)");
     return ESP_OK;
 }
 

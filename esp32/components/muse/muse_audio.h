@@ -62,3 +62,5 @@ float muse_audio_level(const int16_t *mono, size_t frames);
 void muse_audio_chirp(int rising);
 /* Soft ascending startup chime, played once after audio initialization. */
 void muse_audio_startup(void);
+/* Soft descending shutdown chime, before the codecs and power turn off. */
+void muse_audio_shutdown(void);

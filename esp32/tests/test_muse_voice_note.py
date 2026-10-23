@@ -325,6 +325,7 @@ class HatchVoiceNote(NoteRequestAssertions, unittest.TestCase):
 #include "minimp3.h"
 #include "muse_chat_priv.h"
 #define CONFIG_MUSE_BOARD_WAVESHARE_S3_175C 1
+#include "muse_voice_limits.h"
 #define ESP_LOGI(...) ((void)0)
 /* Not assert(): the fakes must still check under -DNDEBUG. */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); exit(3); } } while (0)

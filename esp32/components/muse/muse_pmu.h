@@ -38,8 +38,8 @@
  * PMU interrupt is turned off. */
 esp_err_t muse_pmu_init(i2c_master_bus_handle_t bus, bool key_irqs);
 
-/* Enable or disable hardware power-off from a long PWR key hold. Software
- * power-off through muse_pmu_power_off() remains available. */
+/* Disable both normal and forced 16 s hardware cutoffs for long talk holds,
+ * or enable normal key shutdown. Software power-off remains available. */
 esp_err_t muse_pmu_set_key_shutdown(bool enable);
 
 /* Turns off every rail but these, by their enable bits: dcdc has DCDC1-5 in

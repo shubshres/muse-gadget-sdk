@@ -147,8 +147,9 @@ static esp_err_t init(void)
     }
 #if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
     /* On the 1.75C, PWR is push-to-talk. The PMU otherwise cuts power after
-     * a 10 s hold, interrupting long voice notes. Bottom BOOT powers off
-     * through muse_pmu_power_off() after an 8 s hold instead. */
+     * a normal 10 s or forced 16 s hold, interrupting long voice notes. Disable
+     * both independent cutoffs. Bottom BOOT powers off
+     * through muse_pmu_power_off() after a 5 s hold instead. */
     err = muse_pmu_set_key_shutdown(false);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "couldn't disable PWR key shutdown (%s)", esp_err_to_name(err));

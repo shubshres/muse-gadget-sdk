@@ -79,6 +79,7 @@ extern "C" {
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
+#include "muse_voice_limits.h"
 
 #include <xplat/noise/core/ClientSession.h>
 #include <xplat/noise/core/PsaCryptoBackend.h>
@@ -138,11 +139,7 @@ static_assert(MP3_BUF > MP3_POLL_ROOM + MP3_HOLD, "reads would stall with the MP
  * server transcribes it. Set to 0 to stream to /api/voice/dictation instead.
  */
 #define VOICE_NOTE 1
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
-#define NOTE_MAX_BYTES (MIC_RATE * 2 * 60) /* accept the full one-minute push-to-talk recording */
-#else
-#define NOTE_MAX_BYTES (MIC_RATE * 2 * 20) /* headroom for the default 15-second recording */
-#endif
+#define NOTE_MAX_BYTES MUSE_VOICE_INPUT_MAX_BYTES
 #define NOTE_PART_BYTES (DICT_CHUNK_BYTES / 4 * 3)   /* staged PCM that base64s to one body chunk */
 
 #define MAX_MSGS 8

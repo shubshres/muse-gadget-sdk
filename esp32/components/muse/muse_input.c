@@ -72,7 +72,7 @@ static const char *TAG = "muse_input";
 #define GOODBYE_MS 1500        /* let the goodbye animation play */
 #define HINT_HOLD_US 600000LL
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
-#define LONG_HOLD_US 8000000LL  /* bottom BOOT button; top PWR is push-to-talk */
+#define LONG_HOLD_US 5000000LL  /* bottom BOOT button; top PWR is push-to-talk */
 #else
 #define LONG_HOLD_US 1500000LL
 #endif
@@ -116,6 +116,7 @@ static void power_off(void)
     muse_state_set_level(0);
     muse_state_set_mode(MUSE_MODE_OFF);
     muse_state_set_caption("GOODBYE!");
+    muse_voice_power_off(true);
     vTaskDelay(pdMS_TO_TICKS(GOODBYE_MS));
 #if CONFIG_PM_ENABLE
     /* Automatic light sleep leaves the timer armed, and a deep sleep would
@@ -126,6 +127,7 @@ static void power_off(void)
     /* Only reached if the board couldn't power off. */
     vTaskDelay(pdMS_TO_TICKS(500));
     ESP_LOGE(TAG, "power-off failed (%s)", esp_err_to_name(err));
+    muse_voice_power_off(false);
     muse_state_set_mode(MUSE_MODE_IDLE);
     muse_state_set_caption("COULDN'T POWER OFF");
 }
@@ -169,6 +171,7 @@ static void aux_button(bool pressed, bool edge)
     static bool wake_hold;
     static bool swallow;
     static bool hinted;
+    static int countdown;
     static int sleep_in;    /* ticks until a pending single press sleeps */
     static char saved_caption[64];
 
@@ -178,6 +181,7 @@ static void aux_button(bool pressed, bool edge)
     if (edge && pressed) {
         held_since_us = esp_timer_get_time();
         hinted = false;
+        countdown = 0;
         wake_hold = false;
         swallow = muse_state_asleep();
         if (swallow) {
@@ -201,11 +205,17 @@ static void aux_button(bool pressed, bool edge)
             swallow = true;
             wake_hold = false;
             power_off();
-        } else if (!hinted && held_us >= HINT_HOLD_US) {
-            uint32_t v = UINT32_MAX;
-            muse_state_caption(saved_caption, sizeof(saved_caption), &v);
-            muse_state_set_caption("HOLD TO POWER OFF");
-            hinted = true;
+        } else if (held_us >= HINT_HOLD_US) {
+            if (!hinted) {
+                uint32_t v = UINT32_MAX;
+                muse_state_caption(saved_caption, sizeof(saved_caption), &v);
+                hinted = true;
+            }
+            int seconds = (int)((LONG_HOLD_US - held_us + 999999) / 1000000);
+            if (seconds != countdown) {
+                countdown = seconds;
+                muse_state_set_caption("POWER OFF IN %d", seconds);
+            }
         }
         return;
     }

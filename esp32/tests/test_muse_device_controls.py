@@ -14,7 +14,7 @@ MUSE = Path(__file__).resolve().parents[1] / 'components/muse'
 
 
 def function(source, name):
-    start = re.search(r'(?:static )?(?:void|bool) ' + name + r'\([^)]*\)\n\{', source).start()
+    start = re.search(r'(?:static )?(?:void|bool|esp_err_t) ' + name + r'\([^)]*\)\n\{', source).start()
     end = source.index('{', start) + 1
     depth = 1
     while depth:
@@ -77,15 +77,19 @@ int main(int argc, char **argv) {
     aux_button(true, true);
     assert(!asleep && shutdowns == 0);
     if (test == 0 || test == 1) {
-        /* Irregular polls must still measure eight seconds of real time. */
-        now += 1500000; aux_button(true, false); assert(shutdowns == 0);
-        now += 6499999; aux_button(true, false); assert(shutdowns == 0);
+        /* Irregular polls must still measure five seconds of real time. */
+        now += 600000; aux_button(true, false);
+        assert(strcmp(caption, "POWER OFF IN 5") == 0);
+        now += 400000; aux_button(true, false);
+        assert(strcmp(caption, "POWER OFF IN 4") == 0);
+        now += 500000; aux_button(true, false); assert(shutdowns == 0);
+        now += 3499999; aux_button(true, false); assert(shutdowns == 0);
         now++; aux_button(true, false); assert(shutdowns == 1);
         now += 1000000; aux_button(true, false); assert(shutdowns == 1);
         aux_button(false, true); assert(!asleep && shutdowns == 1);
     } else if (test == 2 || test == 3) {
-        now += 7999999; aux_button(true, false);
-        assert(strcmp(caption, "HOLD TO POWER OFF") == 0);
+        now += 4999999; aux_button(true, false);
+        assert(strcmp(caption, "POWER OFF IN 1") == 0);
         aux_button(false, true);
         assert(strcmp(caption, "READY") == 0 && shutdowns == 0);
     } else if (test == 4) {
@@ -104,31 +108,41 @@ int main(int argc, char **argv) {
 '''
         self.compile_run(code, range(6))
 
-    def test_startup_chime_is_short_and_bounded(self):
+    def test_power_chimes_are_short_bounded_and_opposite(self):
         source = (MUSE / 'muse_audio.c').read_text()
         code = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <math.h>
+#include <stdbool.h>
 #define MUSE_AUDIO_RATE 16000
 #define MUSE_AUDIO_CHUNK 320
 #define ESP_OK 0
 static size_t frames, nonzero;
+static int crossings[3], previous;
 static int muse_audio_write(const int16_t *pcm, size_t n) {
     assert(n <= MUSE_AUDIO_CHUNK);
     for (size_t i = 0; i < n; i++) {
         assert(pcm[i] >= -5000 && pcm[i] <= 5000);
         nonzero += pcm[i] != 0;
+        if (pcm[i] && previous && ((pcm[i] < 0) != (previous < 0))) crossings[(frames + i) / 1600]++;
+        if (pcm[i]) previous = pcm[i];
     }
     frames += n;
     return ESP_OK;
 }
-''' + function(source, 'muse_audio_startup') + r'''
+''' + '\n'.join(function(source, name) for name in ('power_chime', 'muse_audio_startup', 'muse_audio_shutdown')) + r'''
 int main(void) {
     muse_audio_startup();
     assert(frames == MUSE_AUDIO_RATE * 3 / 10);
     assert(nonzero > frames / 2);
+    assert(crossings[0] < crossings[1] && crossings[1] < crossings[2]);
+    frames = nonzero = 0; previous = 0;
+    for (int i = 0; i < 3; i++) crossings[i] = 0;
+    muse_audio_shutdown();
+    assert(frames == MUSE_AUDIO_RATE * 3 / 10 && nonzero > frames / 2);
+    assert(crossings[0] > crossings[1] && crossings[1] > crossings[2]);
     return 0;
 }
 '''
@@ -160,6 +174,8 @@ typedef int muse_hatch_ev_t;
 static int16_t *s_rec, s_chunk[MUSE_AUDIO_CHUNK];
 static size_t s_rec_n, s_sent, s_pre_fill, reads, release_at;
 static bool s_live, s_tried;
+static bool s_power_off_requested;
+#define atomic_load(p) (*(p))
 static int s_held_count;
 static const char *TAG = "voice";
 static void log_stub(const char *tag, const char *fmt, ...) { (void)tag; (void)fmt; }
@@ -199,6 +215,99 @@ int main(void) {
     assert(record(&held, why, sizeof(why)));
     assert(held >= MUSE_AUDIO_RATE * 20);
     assert(held <= MUSE_AUDIO_RATE * 20 + TAIL_FRAMES);
+    s_power_off_requested = true;
+    reads = 0;
+    assert(record(&held, why, sizeof(why)));
+    assert(reads == 0 && held == 0);
+    return 0;
+}
+'''
+        self.compile_run(code)
+
+    def test_shutdown_audio_cancels_reply_and_closes_codecs(self):
+        source = (MUSE / 'muse_voice.c').read_text()
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <string.h>
+#define MUSE_MODE_OFF 9
+static bool speaker, powered;
+static int step, chimes;
+static void muse_hatch_turn_cancel(void) { assert(step++ == 0); }
+static void muse_audio_power(bool on) {
+    if (on) assert(step++ == 1);
+    else assert(step++ == (speaker ? 3 : 2));
+    powered = on;
+}
+static bool muse_settings_speaker_on(void) { return speaker; }
+static void muse_audio_shutdown(void) { assert(powered && step++ == 2); chimes++; }
+static void muse_state_set_mode(int mode) { assert(!powered && mode == MUSE_MODE_OFF); }
+static void muse_state_set_caption(const char *caption) { assert(strcmp(caption, "GOODBYE!") == 0); }
+''' + function(source, 'power_off_audio') + r'''
+int main(void) {
+    speaker = true;
+    power_off_audio();
+    assert(chimes == 1 && !powered);
+    step = 0; speaker = false;
+    power_off_audio();
+    assert(chimes == 1 && !powered);
+    return 0;
+}
+'''
+        self.compile_run(code)
+
+    def test_talk_disables_both_pmu_cutoffs_and_checks_readback(self):
+        source = (MUSE / 'muse_pmu.c').read_text()
+        constants = source[source.index('#define AXP2101_ADDR'):source.index('static i2c_master_dev_handle_t')]
+        code = r'''
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stddef.h>
+#define ESP_OK 0
+#define ESP_FAIL -1
+#define ESP_ERR_INVALID_STATE -2
+typedef int esp_err_t;
+#define ESP_RETURN_ON_ERROR(expr, ...) do { int err = (expr); if (err) return err; } while (0)
+#define ESP_RETURN_ON_FALSE(expr, err, ...) do { if (!(expr)) return err; } while (0)
+#define ESP_LOGI(...) ((void)0)
+''' + constants + r'''
+static void *s_dev = (void *)1;
+static uint8_t regs[256];
+static int fail_read = -1, fail_write = -1;
+static bool stuck;
+static int rd(uint8_t reg, uint8_t *value) {
+    if (reg == fail_read) return -3;
+    *value = regs[reg]; return ESP_OK;
+}
+static int wr(uint8_t reg, uint8_t value) {
+    if (reg == REG_COMMON_CFG) assert(!(value & 0x03)); /* Never reset or soft-off here. */
+    if (reg == fail_write) return -4;
+    if (!stuck) regs[reg] = value;
+    return ESP_OK;
+}
+''' + function(source, 'muse_pmu_set_key_shutdown') + r'''
+int main(void) {
+    for (int common = 0; common < 256; common++) {
+        regs[REG_COMMON_CFG] = common;
+        regs[REG_PWROFF_EN] = 0xff;
+        assert(muse_pmu_set_key_shutdown(false) == ESP_OK);
+        assert(regs[REG_COMMON_CFG] == (common & ~0x07));
+        assert(regs[REG_PWROFF_EN] == 0xfd);
+        assert(muse_pmu_set_key_shutdown(true) == ESP_OK);
+        assert(regs[REG_PWROFF_EN] == 0xff);
+    }
+    regs[REG_COMMON_CFG] = 0x34; regs[REG_PWROFF_EN] = 0x01;
+    stuck = true;
+    assert(muse_pmu_set_key_shutdown(false) == ESP_FAIL); /* 16 s bit would otherwise survive. */
+    regs[REG_COMMON_CFG] = 0x30; regs[REG_PWROFF_EN] = 0x03;
+    assert(muse_pmu_set_key_shutdown(false) == ESP_FAIL); /* Normal cutoff readback too. */
+    stuck = false; fail_write = REG_COMMON_CFG;
+    assert(muse_pmu_set_key_shutdown(false) == -4);
+    fail_write = -1; fail_read = REG_COMMON_CFG;
+    assert(muse_pmu_set_key_shutdown(false) == -3);
+    s_dev = NULL;
+    assert(muse_pmu_set_key_shutdown(false) == ESP_ERR_INVALID_STATE);
     return 0;
 }
 '''

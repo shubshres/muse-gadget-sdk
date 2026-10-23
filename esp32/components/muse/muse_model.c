@@ -15,9 +15,10 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "muse_chat_priv.h"
+#include "muse_voice_limits.h"
 
 #define RESPONSE_MAX (64 * 1024)
-#define PCM_MAX (16000 * 2 * 20)
+#define PCM_MAX MUSE_VOICE_INPUT_MAX_BYTES
 
 typedef struct {
     muse_model_result_t result;

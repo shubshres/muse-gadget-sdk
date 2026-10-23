@@ -54,6 +54,8 @@ bool muse_voice_notes_waiting(void);
 
 /* Stop the reply currently being prepared or played (called from the LVGL task). */
 void muse_voice_cancel_response(void);
+/* Stop voice work and play the shutdown cue on the audio task. False resumes after a failed shutdown. */
+void muse_voice_power_off(bool shutting_down);
 /* Tap the Muse avatar to pause or resume the current spoken reply. */
 void muse_voice_toggle_pause(void);
 bool muse_voice_paused(void);

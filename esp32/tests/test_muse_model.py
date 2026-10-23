@@ -206,6 +206,8 @@ int main(void) {
 #include <stdlib.h>
 #include <string.h>
 #include "muse_model.h"
+#define CONFIG_MUSE_BOARD_WAVESHARE_S3_175C 1
+#include "muse_voice_limits.h"
 #define MALLOC_CAP_SPIRAM 1
 #define MALLOC_CAP_8BIT 2
 #define portMAX_DELAY 0
@@ -259,6 +261,26 @@ int main(void) {
     strcpy(selected_key,"key-b"); begin(MUSE_PROVIDER_ANTHROPIC,0); complete(true);
     begin(MUSE_PROVIDER_ANTHROPIC,1); complete(false);
     muse_model_forget(); assert(!s_history.messages);
+    /* Long recordings used to pass the session's cap, then fail this worker's
+     * old 20-second guard and queue the same recording for endless retries. */
+    uint8_t *pcm = malloc(16000 * 2 * 61);
+    assert(pcm);
+    for (size_t i=0; i<16000*2*61; i++) pcm[i]=(uint8_t)i;
+    for (int seconds=21; seconds<=60; seconds+=39) {
+        size_t bytes=16000*2*seconds;
+        assert(muse_model_start(2,MUSE_PROVIDER_GEMINI,NULL,pcm,bytes));
+        assert(active->provider==MUSE_PROVIDER_GEMINI);
+        assert(active->wav_len==bytes+44);
+        assert(!memcmp(active->wav+44,pcm,bytes));
+        uint32_t riff, data;
+        memcpy(&riff,active->wav+4,4); memcpy(&data,active->wav+40,4);
+        assert(riff==bytes+36 && data==bytes);
+        assert(!muse_model_start(3,MUSE_PROVIDER_GEMINI,NULL,pcm,bytes)); /* busy */
+        complete(false);
+    }
+    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*61));
+    assert(!muse_model_start(4,MUSE_PROVIDER_GEMINI,NULL,pcm,16000*2*60-1));
+    free(pcm);
     return 0;
 }
 '''

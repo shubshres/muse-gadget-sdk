@@ -79,7 +79,11 @@ resume. The accelerometer must be present for the motion controls; the
 physical buttons continue to work if it isn't. These controls do not apply to
 the separate 1.75 model. Hold the top talk button for up to 60 seconds to
 record; release to send. The bottom button sleeps on a short press and shuts
-down after an eight-second hold, including when the hold starts asleep.
+down after a five-second hold, including when the hold starts asleep. A
+countdown appears while holding; releasing early cancels shutdown. A short
+descending chime plays before power turns off, following speaker mute and volume.
+Both the PMU's normal and forced 16-second key cutoffs are disabled on the
+top talk button, so holding it can record the full minute.
 
 Sound settings include a Power-up sound switch, saved across restarts. The
 short startup chime follows the speaker mute and volume settings.

@@ -167,6 +167,7 @@ static const char *const captions[] = {
 
 static QueueHandle_t s_queue;
 static atomic_bool s_cancel_response;
+static atomic_bool s_power_off_requested;
 static atomic_bool s_pause_response;
 static atomic_bool s_replay_request;
 static atomic_bool s_replaying;
@@ -456,7 +457,7 @@ static bool record(size_t *held, char *why, size_t cap)
     size_t pre = n;
     bool released = false;
     size_t stop_at = MAX_FRAMES;
-    while (n + MUSE_AUDIO_CHUNK <= stop_at) {
+    while (n + MUSE_AUDIO_CHUNK <= stop_at && !atomic_load(&s_power_off_requested)) {
         if (muse_audio_read(s_chunk, MUSE_AUDIO_CHUNK) != ESP_OK) {
             break;
         }
@@ -862,7 +863,7 @@ static bool wait_delivered(void)
 {
     char text[96];
     int64_t give_up = esp_timer_get_time() + ACK_WAIT_US;
-    while (esp_timer_get_time() < give_up) {
+    while (esp_timer_get_time() < give_up && !atomic_load(&s_power_off_requested)) {
         muse_hatch_ev_t ev;
         while ((ev = muse_hatch_turn_event(text, sizeof(text))) != MUSE_HATCH_EV_NONE) {
             if (ev == MUSE_HATCH_EV_SENT || ev == MUSE_HATCH_EV_REPLY || ev == MUSE_HATCH_EV_DONE) {
@@ -1099,15 +1100,39 @@ static bool replay_last_audio(void)
     return pressed;
 }
 
+/* Own the output on the voice task: replies and the shutdown cue must not
+ * write the shared I2S buffer concurrently. Keep codecs quiet until power cuts. */
+static void power_off_audio(void)
+{
+    muse_hatch_turn_cancel();
+    muse_audio_power(true);
+    if (muse_settings_speaker_on()) muse_audio_shutdown();
+    muse_audio_power(false);
+    muse_state_set_mode(MUSE_MODE_OFF);
+    muse_state_set_caption("GOODBYE!");
+}
+
 static void voice_task(void *arg)
 {
     bool pending_down = false;
+    bool power_off_played = false;
     muse_audio_selftest();
     if (muse_settings_startup_sound() && muse_settings_speaker_on() && !muse_state_asleep()) {
         muse_audio_startup();
         pre_reset();
     }
     for (;;) {
+        if (atomic_load(&s_power_off_requested)) {
+            pending_down = false;
+            if (!power_off_played) {
+                power_off_audio();
+                power_off_played = true;
+            }
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (power_off_played) muse_audio_power(true);   /* shutdown failed: resume voice */
+        power_off_played = false;
         bool wake = false;
         if (!pending_down) {
             muse_input_event_t ev;
@@ -1179,6 +1204,7 @@ static void voice_task(void *arg)
         if (wake && !held_on_waking()) {
             continue;   /* a tap: it only woke Muse */
         }
+        if (atomic_load(&s_power_off_requested)) continue;
         muse_wifi_power(MUSE_WIFI_FULL);
         atomic_store(&s_cancel_response, false);
         if (!can_record()) {
@@ -1198,6 +1224,11 @@ static void voice_task(void *arg)
         pre_reset();
         bool ok = record(&held, why, sizeof(why));
         pending_down = false;
+        if (atomic_load(&s_power_off_requested)) {
+            muse_hatch_turn_cancel();
+            drop_rec();
+            continue;
+        }
         if (held < MIN_HELD_FRAMES && !wake) {
             muse_hatch_turn_cancel();
             drop_rec();
@@ -1251,6 +1282,15 @@ void muse_voice_set_monitor(bool on)
 float muse_voice_monitor_db(void)
 {
     return s_monitor_db;
+}
+
+void muse_voice_power_off(bool shutting_down)
+{
+    atomic_store(&s_power_off_requested, shutting_down);
+    if (shutting_down) {
+        muse_voice_cancel_response();
+        muse_state_nudge();
+    }
 }
 
 void muse_voice_request_chirp(void)
