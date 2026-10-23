@@ -718,7 +718,7 @@ static bool console_command(char *line, bool whole)
     if (whole && s_console_hook && s_console_hook(line)) {
         return true;
     }
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#if CONFIG_MUSE_HATCH
     if (!strncmp(line, "azure.key=", 10)) {
         const char *key = line + 10;
         size_t len = strlen(key);
@@ -728,6 +728,29 @@ static bool console_command(char *line, bool whole)
         }
         esp_err_t err = valid ? muse_settings_set_azure_key(key) : ESP_ERR_INVALID_ARG;
         printf("@azure.key %s\n", err == ESP_OK ? "ok" : "error");
+        fflush(stdout);
+        return true;
+    }
+#endif
+#if CONFIG_MUSE_HATCH
+    if (!strncmp(line, "model.", 6)) {
+        esp_err_t err = ESP_ERR_INVALID_ARG;
+        if (whole && !strncmp(line, "model.provider=", 15)) {
+            for (int i = 0; i < MUSE_PROVIDER_COUNT; i++)
+                if (!strcmp(line + 15, muse_provider_id(i))) err = muse_settings_set_provider(i);
+        } else if (whole) {
+            for (int i = 1; i < MUSE_PROVIDER_COUNT; i++) {
+                char prefix[40];
+                snprintf(prefix, sizeof(prefix), "model.%s.key=", muse_provider_id(i));
+                if (!strncmp(line, prefix, strlen(prefix)))
+                    err = muse_settings_set_model_key(i, line + strlen(prefix));
+                snprintf(prefix, sizeof(prefix), "model.%s.id=", muse_provider_id(i));
+                if (!strncmp(line, prefix, strlen(prefix)))
+                    err = muse_settings_set_model_id(i, line + strlen(prefix));
+            }
+        }
+        memset(line, 0, strlen(line));
+        printf("@model %s\n", err == ESP_OK ? "ok" : "error");
         fflush(stdout);
         return true;
     }

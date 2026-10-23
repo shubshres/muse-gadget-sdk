@@ -47,6 +47,10 @@ void muse_hatch_report_vm(const char *vm_id)
 
 bool muse_hatch_configured(void)
 {
+#if CONFIG_MUSE_ENABLED
+    muse_provider_t provider = muse_settings_provider();
+    if (provider != MUSE_PROVIDER_MUSE) return muse_settings_model_ready(provider);
+#endif
     return muse_settings_hatch_token_len() > 0 || muse_link_hatch_linked();
 }
 
@@ -70,7 +74,12 @@ void muse_hatch_status(muse_hatch_status_t *out)
 {
     if (!muse_hatch_configured()) {
         out->state = MUSE_HATCH_NOT_SET;
+#if CONFIG_MUSE_ENABLED
+        strlcpy(out->detail, muse_settings_provider() == MUSE_PROVIDER_MUSE ?
+                "Pair in the Muse app" : "Add the selected provider API key", sizeof(out->detail));
+#else
         strlcpy(out->detail, "Pair in the Muse app", sizeof(out->detail));
+#endif
         out->vm_id[0] = '\0';
         return;
     }

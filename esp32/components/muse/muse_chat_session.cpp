@@ -70,6 +70,9 @@ extern "C" {
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
 #include "muse_azure_tts.h"
 #endif
+#if CONFIG_MUSE_ENABLED
+#include "muse_model.h"
+#endif
 #include "muse_link.h"
 #include "muse_settings.h"
 #include "muse_wifi.h"
@@ -153,6 +156,13 @@ struct ev_t {
     char text[EV_TEXT];
 };
 
+#if CONFIG_MUSE_ENABLED
+static bool s_direct;
+static muse_provider_t s_provider;
+static uint32_t s_model_request;
+static uint8_t *s_model_pcm;
+static size_t s_model_bytes;
+#endif
 static QueueHandle_t s_cmds, s_events;
 static StreamBufferHandle_t s_in, s_out;
 static std::atomic<uint32_t> s_gen{0};
@@ -972,6 +982,12 @@ static void turn_reset_streams(void)
 
 static void turn_finish(void)
 {
+#if CONFIG_MUSE_ENABLED
+    ++s_model_request;  /* Drop results of cancelled/replaced typed and voice turns. */
+    free(s_model_pcm);
+    s_model_pcm = nullptr;
+    s_model_bytes = 0;
+#endif
     turn_reset_streams();
     free(s_turn.azure_mp3);
     s_turn.azure_mp3 = nullptr;
@@ -1028,6 +1044,17 @@ static bool turn_start(uint32_t gen, bool text)
     s_reply_shown[0] = '\0';
     s_turn.start_us = now_us();
     resampler_init(&s_turn.up, MIC_RATE, DICT_RATE);
+#if CONFIG_MUSE_ENABLED
+    s_provider = muse_settings_provider();
+    s_direct = s_provider != MUSE_PROVIDER_MUSE;
+    if (s_direct) {
+        if (!muse_wifi_connected() || !muse_settings_model_ready(s_provider)) {
+            turn_fail("CHECK WI-FI AND MODEL API KEY");
+            return false;
+        }
+        return true;
+    }
+#endif
     if (!ensure_connected()) {
         turn_fail(muse_hatch_configured() ? "CAN'T REACH MUSE" : "MUSE NOT SET UP");
         return false;
@@ -1040,6 +1067,19 @@ static void turn_begin(uint32_t gen)
     if (!turn_start(gen, false)) {
         return;
     }
+#if CONFIG_MUSE_ENABLED
+    if (s_direct) {
+        if (!muse_settings_azure_tts_ready()) {
+            turn_fail("ADD AZURE SPEECH KEY FOR VOICE");
+            return;
+        }
+        s_model_pcm = static_cast<uint8_t *>(psram_alloc(NOTE_MAX_BYTES));
+        if (!s_model_pcm) { turn_fail("OUT OF MEMORY"); return; }
+        s_model_bytes = 0;
+        s_turn.phase = P_LISTEN;
+        return;
+    }
+#endif
     if (VOICE_NOTE) {
         if (!open_note()) {
             disconnect("chat open failed");
@@ -1246,6 +1286,16 @@ static void text_begin(const char *text)
         return;
     }
     ESP_LOGI(TAG, "typed turn: %u bytes", (unsigned)strlen(text));
+#if CONFIG_MUSE_ENABLED
+    if (s_direct) {
+        if (!muse_model_start(++s_model_request, s_provider, text, nullptr, 0)) {
+            turn_fail("MODEL BUSY OR OUT OF MEMORY");
+            return;
+        }
+        s_turn.phase = P_WAIT_REPLY;
+        s_turn.chat_us = s_turn.last_event_us = now_us();
+    } else
+#endif
     send_chat(text, "text");
     if (s_turn.phase == P_WAIT_REPLY) {
         mark(M_SENT);
@@ -1979,6 +2029,57 @@ static bool poll_socket(void)
     return true;
 }
 
+#if CONFIG_MUSE_ENABLED
+/* Capture and consume results on the session task; HTTPS runs on its own worker. */
+static void pump_model(void)
+{
+    if (s_direct && s_turn.phase == P_LISTEN) {
+        size_t room = NOTE_MAX_BYTES - s_model_bytes;
+        s_model_bytes += room ? xStreamBufferReceive(s_in, s_model_pcm + s_model_bytes, room, 0) : 0;
+        if (s_turn.end_requested || s_model_bytes == NOTE_MAX_BYTES) {
+            if (s_model_bytes < MIC_RATE * 2 * 3 / 10) {
+                turn_fail("DIDN'T CATCH THAT");
+            } else if (!muse_model_start(++s_model_request, s_provider, nullptr, s_model_pcm, s_model_bytes)) {
+                turn_fail("MODEL BUSY OR CHECK SPEECH KEY");
+            } else {
+                free(s_model_pcm);
+                s_model_pcm = nullptr;
+                s_turn.phase = P_WAIT_REPLY;
+                s_turn.chat_us = s_turn.last_event_us = now_us();
+                emit(MUSE_HATCH_EV_SENT, nullptr);
+            }
+        }
+    }
+    muse_model_result_t result;
+    while (muse_model_poll(&result)) {
+        if (s_direct && result.request == s_model_request && s_turn.phase == P_WAIT_REPLY &&
+            (s_turn.text || s_turn.gen == s_gen.load())) {
+            if (result.error[0]) {
+                muse_hatch_report(MUSE_HATCH_UNREACHABLE, result.error);
+                turn_fail(result.error);
+            } else {
+                muse_hatch_report(MUSE_HATCH_REACHABLE, muse_provider_name(s_provider));
+                if (result.heard) emit(MUSE_HATCH_EV_HEARD, result.heard);
+                int i = bind_msg("direct-model", nullptr);
+                if (i >= 0) {
+                    if (s_turn.text) {
+                        muse_hatch_console("text", result.text, "\"msg\":%d", i);
+                        s_turn.msgs[i].len = strlen(result.text);
+                    } else {
+                        append_text(s_turn.msgs[i], result.text);
+                        show_reply_start(s_turn.msgs[i]);
+                    }
+                    message_done(i, result.text);
+                    s_turn.last_event_us = s_turn.last_content_us = now_us();
+                }
+            }
+        }
+        free(result.text);
+        free(result.heard);
+    }
+}
+#endif
+
 /* ---- Task ---- */
 
 static void drop_connection(const char *why)
@@ -1996,6 +2097,12 @@ static void handle(const cmd_t &cmd)
 {
     switch (cmd.type) {
     case CMD_CONNECT:
+#if CONFIG_MUSE_ENABLED
+        if (muse_settings_provider() != MUSE_PROVIDER_MUSE) {
+            muse_hatch_report(MUSE_HATCH_UNTESTED, "Send a message to test this provider");
+            break;
+        }
+#endif
         if (s_turn.phase == P_IDLE) {
             disconnect("reconnect requested");
             ensure_connected();
@@ -2055,7 +2162,7 @@ static void hatch_task(void *arg)
         /* Resting, the socket's keepalive (PING_US) needs no quicker polls.
          * Resting unconnected, Wi-Fi may nap (muse_wifi_nap): wait for a
          * turn or for waking (CMD_WAKE) instead of watching it. */
-        int wait_ms = !s_connected ? (s_resting ? -1 : 200) : s_turn.phase != P_IDLE ? 2 : s_resting ? 500 : 20;
+        int wait_ms = s_turn.phase != P_IDLE ? 2 : !s_connected ? (s_resting ? -1 : 200) : s_resting ? 500 : 20;
         TickType_t wait = wait_ms < 0 ? portMAX_DELAY : pdMS_TO_TICKS(wait_ms);
         if (xQueueReceive(s_cmds, &cmd, wait) == pdTRUE) {
             handle(cmd);
@@ -2063,6 +2170,18 @@ static void hatch_task(void *arg)
                 handle(cmd);
             }
         }
+#if CONFIG_MUSE_ENABLED
+        pump_model();
+        if (muse_settings_provider() != MUSE_PROVIDER_MUSE) {
+            if (s_connected) disconnect("direct model selected");
+            if (s_direct && s_turn.phase == P_WAIT_REPLY) {
+                start_tts();
+                decode();
+                check_turn();
+            }
+            continue;
+        }
+#endif
         if (!s_connected) {
             if (!muse_wifi_connected()) {
                 s_auto_next_us = 0;
@@ -2175,6 +2294,9 @@ extern "C" void muse_hatch_start(void)
     if (!muse_azure_tts_init()) {
         ESP_LOGE(TAG, "Azure speech setup failed; replies will be captions");
     }
+#endif
+#if CONFIG_MUSE_ENABLED
+    if (!muse_model_init()) ESP_LOGE(TAG, "Direct model setup failed");
 #endif
     /* Stack in PSRAM: TLS, Noise and the MP3 decoder (~16 KB of scratch) all run here. */
     if (!s_cmds || !s_events || !s_in || !s_out || !s_turn.chunk || !s_turn.mp3 || (VOICE_NOTE && !s_turn.note) || !s_pcm || !s_pcm16 ||

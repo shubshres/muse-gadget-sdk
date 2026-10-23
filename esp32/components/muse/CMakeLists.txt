@@ -43,7 +43,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_link.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
-        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
+        list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_model.c" "muse_model_codec.c")
         if(CONFIG_MUSE_BOARD_WAVESHARE_S3_175C)
             list(APPEND srcs "muse_azure_tts.c")
         endif()

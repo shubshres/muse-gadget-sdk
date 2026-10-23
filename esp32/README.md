@@ -171,12 +171,127 @@ a fresh encrypted session. Because these are community devices, pairing has no
 manufacturer verification and can't prevent an active man-in-the-middle
 attack. Set it up on a network you trust.
 
+## Update the Waveshare 1.75C and load a Gemini key
+
+These steps are for the **Waveshare ESP32-S3-Touch-AMOLED-1.75C**. Run them
+from this `esp32` directory. Close any serial monitor before flashing or
+uploading a key. Updating firmware keeps existing Wi-Fi, pairing and saved keys.
+
+1. Activate ESP-IDF v6.0.1 in your terminal:
+
+   ```sh
+   . "$HOME/esp/esp-idf-v6/export.sh"
+   ```
+
+   If activation reports a missing Python environment, select the environment
+   installed on your machine, then activate again. For the existing Python 3.10
+   installation on this Mac:
+
+   ```sh
+   export IDF_PYTHON_ENV_PATH="$HOME/.espressif/python_env/idf6.0_py3.10_env"
+   . "$HOME/esp/esp-idf-v6/export.sh"
+   ```
+
+2. Plug the board in with a USB data cable and identify it:
+
+   ```sh
+   python tools/muse/chat.py --status
+   python tools/muse/ports.py --list
+   ```
+
+   The status should identify `Waveshare ESP32-S3-Touch-AMOLED-1.75C`.
+   The examples below use `/dev/cu.usbmodem2101`; replace it with the port
+   listed for your board. If several boards are attached, also pass
+   `--port /dev/cu.usbmodem2101` to the status and key-upload commands.
+
+3. Keep the existing configuration in `build-muse-waveshare-s3-175c/` when
+   updating this project's configured build. For a first build, configure the
+   board and enter your SDK token under **ESP32 Device SDK → Muse Gadgets SDK
+   token**:
+
+   ```sh
+   idf.py -B build-muse-waveshare-s3-175c -DIDF_TARGET=esp32s3 \
+     -DSDKCONFIG=build-muse-waveshare-s3-175c/sdkconfig \
+     -DSDKCONFIG_DEFAULTS="sdkconfig.defaults;devices/sdkconfig.muse;devices/sdkconfig.muse-waveshare-s3-175c" \
+     menuconfig
+   ```
+
+4. For an existing build created before the Gemini TLS fix, enable
+   `CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY` in that build's
+   `menuconfig` (**Component config → mbedTLS → Certificate Bundle**).
+   Fresh configurations inherit this from `sdkconfig.defaults`. This lets the
+   board validate Google's cross-signed certificate chain.
+
+   ```sh
+   idf.py -B build-muse-waveshare-s3-175c menuconfig
+   ```
+
+   Build the updated firmware:
+
+   ```sh
+   idf.py -B build-muse-waveshare-s3-175c build
+   ```
+
+5. Flash that build onto the board:
+
+   ```sh
+   idf.py -B build-muse-waveshare-s3-175c -p /dev/cu.usbmodem2101 flash
+   ```
+
+   Wait for verification and the final reset to finish. The flash command writes
+   the matching bootloader, partition table and application from this build.
+
+6. Verify the restarted board answers:
+
+   ```sh
+   python tools/muse/chat.py --port /dev/cu.usbmodem2101 --status
+   ```
+
+7. Upload the Gemini key and select Gemini:
+
+   ```sh
+   python tools/muse/model_key.py gemini --port /dev/cu.usbmodem2101 --select
+   ```
+
+   Paste the key at the hidden prompt and press Enter. Wait for **API key saved
+   on the board** and **gemini selected**. The key is stored on the device and
+   survives restarts. If you see **No save confirmation. Install firmware with
+   direct model support**, complete the flash step, then retry the upload.
+
+8. Open **Settings → Muse** on the device. Check **Chat provider**, **Model ID**,
+   and the Gemini key's **Set** status. Use `gemini-3.5-flash-lite` for the
+   lightweight, free-tier-eligible Gemini model. Existing saved model IDs survive
+   a reflash; change **Model ID** if it still shows `gemini-3.8-flash`. Push-to-talk also needs the Azure Speech
+   key and region already saved there; on this board Azure transcribes your
+   recording, Gemini answers, and Azure speaks the reply with captions. To
+   upload an Azure Speech key from the same terminal:
+
+   ```sh
+   python tools/muse/azure_key.py --port /dev/cu.usbmodem2101
+   ```
+
+   A typed test uses the selected provider without needing Azure:
+
+   ```sh
+   python tools/muse/chat.py --port /dev/cu.usbmodem2101 "Say hello in one sentence."
+   ```
+
+For OpenAI or Anthropic, replace `gemini` in the key-upload command with
+`openai` or `anthropic`. You can also switch providers in Settings; select
+**Muse** to use the existing Muse pairing again. Direct providers use their
+own API billing and currently handle each request independently, without
+Muse's memory or tools.
+
 ## Boards
 
 Boards marked UI run the full on-screen UI: an animated avatar, push-to-talk and
 settings. Audio and image support vary by board, so check the feature table in
 [`devices/`](devices). The others show status on a light, a ring or a simple
 status screen.
+
+UI boards with PSRAM can also select Gemini, OpenAI or Anthropic in Settings
+and store their API keys over USB. See [direct model setup](docs/model-providers.md)
+for key upload, model selection and the Azure Speech voice setup.
 
 | Board | What you get | Build it |
 |---|---|---|

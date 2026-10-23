@@ -17,6 +17,7 @@
 #include "muse_settings.h"
 
 #include <string.h>
+#include <stdio.h>
 
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -46,6 +47,11 @@ static struct {
     char host[MUSE_HOST_MAX + 1];
     char vm[MUSE_VM_MAX + 1];
     char token[MUSE_TOKEN_MAX + 1];
+#if CONFIG_MUSE_HATCH
+    uint8_t provider;
+    char model_keys[MUSE_PROVIDER_COUNT][MUSE_MODEL_KEY_MAX + 1];
+    char model_ids[MUSE_PROVIDER_COUNT][MUSE_MODEL_ID_MAX + 1];
+#endif
     char azure_region[MUSE_AZURE_REGION_MAX + 1];
     char azure_key[MUSE_AZURE_KEY_MAX + 1];
 } s = {
@@ -59,6 +65,9 @@ static struct {
     .wifi_on = true,
     .host = DEFAULT_HOST,
     .azure_region = "eastus",
+#if CONFIG_MUSE_HATCH
+    .model_ids = { "", "gemini-3.5-flash-lite", "gpt-4.1-mini", "claude-sonnet-5-5" },
+#endif
 };
 
 static SemaphoreHandle_t s_lock;
@@ -144,6 +153,17 @@ esp_err_t muse_settings_init(void)
     load_str("az_region", s.azure_region, sizeof(s.azure_region));
     load_str("az_key", s.azure_key, sizeof(s.azure_key));
 
+#if CONFIG_MUSE_HATCH
+    load_u8("provider", &s.provider);
+    if (s.provider >= MUSE_PROVIDER_COUNT) s.provider = MUSE_PROVIDER_MUSE;
+    for (int i = 1; i < MUSE_PROVIDER_COUNT; i++) {
+        char name[16];
+        snprintf(name, sizeof(name), "model_key%d", i);
+        load_str(name, s.model_keys[i], sizeof(s.model_keys[i]));
+        snprintf(name, sizeof(name), "model_id%d", i);
+        load_str(name, s.model_ids[i], sizeof(s.model_ids[i]));
+    }
+#endif
     s.volume = clampi(s.volume, 0, 100);
     s.mic_gain = clampi(s.mic_gain, 0, MUSE_MIC_GAIN_MAX);
     s.brightness = clampi(s.brightness, 10, 100);
@@ -362,3 +382,92 @@ esp_err_t muse_settings_set_azure_key(const char *key)
     });
     return err;
 }
+
+#if CONFIG_MUSE_HATCH
+const char *muse_provider_name(muse_provider_t p)
+{
+    static const char *names[] = { "Muse", "Gemini", "OpenAI", "Anthropic" };
+    return p >= 0 && p < MUSE_PROVIDER_COUNT ? names[p] : "Unknown";
+}
+
+const char *muse_provider_id(muse_provider_t p)
+{
+    static const char *ids[] = { "muse", "gemini", "openai", "anthropic" };
+    return p >= 0 && p < MUSE_PROVIDER_COUNT ? ids[p] : "unknown";
+}
+
+muse_provider_t muse_settings_provider(void)
+{
+    muse_provider_t p;
+    LOCKED(p = (muse_provider_t)s.provider);
+    return p;
+}
+
+esp_err_t muse_settings_set_provider(muse_provider_t p)
+{
+    if (p < 0 || p >= MUSE_PROVIDER_COUNT) return ESP_ERR_INVALID_ARG;
+    esp_err_t err;
+    LOCKED({
+        err = nvs_set_u8(s_nvs, "provider", p);
+        if (err == ESP_OK) err = nvs_commit(s_nvs);
+        if (err == ESP_OK) s.provider = p;
+    });
+    if (err == ESP_OK) notify(MUSE_SETTING_HATCH);
+    return err;
+}
+
+void muse_settings_model(muse_provider_t p, char model[MUSE_MODEL_ID_MAX + 1],
+                         char key[MUSE_MODEL_KEY_MAX + 1])
+{
+    if (model) model[0] = '\0';
+    if (key) key[0] = '\0';
+    if (p <= MUSE_PROVIDER_MUSE || p >= MUSE_PROVIDER_COUNT) return;
+    LOCKED({
+        if (model) strlcpy(model, s.model_ids[p], MUSE_MODEL_ID_MAX + 1);
+        if (key) strlcpy(key, s.model_keys[p], MUSE_MODEL_KEY_MAX + 1);
+    });
+}
+
+bool muse_settings_model_ready(muse_provider_t p)
+{
+    if (p <= MUSE_PROVIDER_MUSE || p >= MUSE_PROVIDER_COUNT) return false;
+    bool ready;
+    LOCKED(ready = s.model_ids[p][0] && s.model_keys[p][0]);
+    return ready;
+}
+
+static esp_err_t set_model_value(muse_provider_t p, const char *value, bool key)
+{
+    if (p <= MUSE_PROVIDER_MUSE || p >= MUSE_PROVIDER_COUNT || !value) return ESP_ERR_INVALID_ARG;
+    size_t n = strlen(value), max = key ? MUSE_MODEL_KEY_MAX : MUSE_MODEL_ID_MAX;
+    if (n > max || (!key && !n)) return ESP_ERR_INVALID_SIZE;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = value[i];
+        if (key ? (c < 33 || c > 126) :
+                  !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                    (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'))
+            return ESP_ERR_INVALID_ARG;
+    }
+    char name[16];
+    snprintf(name, sizeof(name), key ? "model_key%d" : "model_id%d", p);
+    esp_err_t err;
+    LOCKED({
+        err = nvs_set_str(s_nvs, name, value);
+        if (err == ESP_OK) err = nvs_commit(s_nvs);
+        if (err == ESP_OK) strlcpy(key ? s.model_keys[p] : s.model_ids[p], value, max + 1);
+    });
+    if (err == ESP_OK) notify(MUSE_SETTING_HATCH);
+    return err;
+}
+
+esp_err_t muse_settings_set_model_key(muse_provider_t p, const char *key)
+{
+    return set_model_value(p, key, true);
+}
+
+esp_err_t muse_settings_set_model_id(muse_provider_t p, const char *model)
+{
+    return set_model_value(p, model, false);
+}
+
+#endif /* CONFIG_MUSE_HATCH */

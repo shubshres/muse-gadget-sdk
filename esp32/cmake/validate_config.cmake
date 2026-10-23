@@ -68,6 +68,13 @@ if((CONFIG_ESP_TLS_INSECURE OR CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY) AND
         "CONFIG_ESP_TLS_INSECURE / CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY are only allowed in the data-path bench (CONFIG_HOMEHUB_PIPELINE_BENCH). ${GADGET_CONFIG_REGEN_HINT}")
 endif()
 
+# Direct model HTTPS needs the trusted GTS root within Google's cross-signed
+# chain. Existing generated configurations override sdkconfig.defaults.
+if(CONFIG_MUSE_HATCH AND NOT CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY)
+    message(FATAL_ERROR
+        "Muse model HTTPS requires CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y. Enable it in the active build's menuconfig under Component config > mbedTLS > Certificate Bundle. ${GADGET_CONFIG_REGEN_HINT}")
+endif()
+
 # A token from gadgets.muse.ai is mgst_ plus 43 canonical base64url characters.
 # Manufacturer builds pair with fleet attestation instead, and internal builds
 # without a token disable CONFIG_GADGET_SDK_TOKEN_WARN.

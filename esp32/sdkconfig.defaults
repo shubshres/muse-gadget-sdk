@@ -116,6 +116,9 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # TLS: root CA bundle for HTTPS / WSS / OTA.
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+# Google serves a cross-signed GTS root: accept the trusted root in the middle
+# of its chain instead of requiring the legacy root at the end.
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_CROSS_SIGNED_VERIFY=y
 
 # TLS record sizes. Outbound was 4 KB but each TLS record carries
 # encrypt/MAC/header overhead — 16 KB records cut that overhead 4x.

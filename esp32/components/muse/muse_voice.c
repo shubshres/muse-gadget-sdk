@@ -24,6 +24,7 @@
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/idf_additions.h"
 #include "freertos/semphr.h"
@@ -41,6 +42,28 @@
 #include "muse_wifi.h"
 
 static const char *TAG = "muse_voice";
+
+/* Pick once per reply so acknowledgements don't shuffle the caption. */
+static const char *thinking_caption(void)
+{
+    static const char *const captions[] = {
+        "WARMING UP MY BRAIN...",
+        "SHAKING THE IDEA JAR...",
+        "ASKING MY INNER OWL...",
+        "UNTANGLING THOUGHTS...",
+        "GIVING THAT A NOODLE...",
+        "BRB, BRAIN GYM...",
+        "ADDING A PINCH OF GENIUS...",
+        "HUNTING FOR A LIGHTBULB...",
+        "HERDING MY BRAIN CELLS...",
+        "SPINNING THE THOUGHT WHEEL...",
+        "THINKING CAP: ACTIVATED!",
+        "COOKING UP AN ANSWER...",
+        "LET ME COOK! LET ME COOK NOW! LET ME COOK! I SAID LET ME COOK!...",
+    };
+    return captions[esp_random() % (sizeof(captions) / sizeof(captions[0]))];
+}
+
 
 #define MAX_SECS 15
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
@@ -420,7 +443,8 @@ static bool hatch_reply(bool *delivered)
 {
     atomic_store(&s_pause_response, false);
     muse_state_set_mode(MUSE_MODE_THINKING);
-    muse_state_set_caption("SENDING VOICE NOTE");   /* until there's a transcript or reply */
+    const char *waiting = thinking_caption();
+    muse_state_set_caption("%s", waiting);   /* until there's a transcript or reply */
     static int16_t buf[MUSE_AUDIO_CHUNK];
     static const int16_t silence[MUSE_AUDIO_CHUNK];
     char text[96];
@@ -454,7 +478,7 @@ static bool hatch_reply(bool *delivered)
             case MUSE_HATCH_EV_SENT:
                 *delivered = true;
                 if (!speaking && !replied) {
-                    muse_state_set_caption("NOTE SENT - WAITING FOR MUSE");
+                    muse_state_set_caption("%s", waiting);
                 }
                 break;
             case MUSE_HATCH_EV_REPLY:

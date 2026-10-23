@@ -88,12 +88,19 @@ static char s_join_ssid[MUSE_SSID_MAX + 1];
 
 /* Hatch page. */
 static lv_obj_t *s_hatch_status, *s_hatch_host, *s_hatch_vm, *s_hatch_token, *s_hatch_sdk_token;
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#if CONFIG_MUSE_HATCH
 static lv_obj_t *s_azure_region, *s_azure_key;
 #endif
 static lv_obj_t *s_link_status, *s_link_reset_lbl;
 static int64_t s_link_reset_armed_us;
 static int64_t s_sdk_token_bad_us;   /* when an invalid SDK token was entered */
+
+#if CONFIG_MUSE_HATCH
+static lv_obj_t *s_provider_value, *s_model_value;
+static lv_obj_t *s_model_key_values[MUSE_PROVIDER_COUNT];
+static muse_provider_t s_edit_provider;
+static int64_t s_model_error_us;
+#endif
 
 /* Bluetooth page. */
 static lv_obj_t *s_ble_sw, *s_ble_status;
@@ -842,6 +849,47 @@ static void tick_wifi(void)
 
 /* ---------- Hatch ---------- */
 
+#if CONFIG_MUSE_HATCH
+static void model_error(esp_err_t err)
+{
+    if (err != ESP_OK) s_model_error_us = esp_timer_get_time();
+}
+
+static void on_provider(lv_event_t *e)
+{
+    (void)e;
+    model_error(muse_settings_set_provider((muse_settings_provider() + 1) % MUSE_PROVIDER_COUNT));
+}
+
+static void on_model_done(const char *text)
+{
+    if (text[0]) model_error(muse_settings_set_model_id(s_edit_provider, text));
+}
+
+static void on_model(lv_event_t *e)
+{
+    (void)e;
+    s_edit_provider = muse_settings_provider();
+    if (s_edit_provider == MUSE_PROVIDER_MUSE) return;
+    char model[MUSE_MODEL_ID_MAX + 1];
+    muse_settings_model(s_edit_provider, model, NULL);
+    open_text("Model ID", model, false, MUSE_MODEL_ID_MAX,
+              "API model name; empty keeps current", on_model_done, s_hatch);
+}
+
+static void on_model_key_done(const char *text)
+{
+    if (text[0]) model_error(muse_settings_set_model_key(s_edit_provider, text));
+}
+
+static void on_model_key(lv_event_t *e)
+{
+    s_edit_provider = (muse_provider_t)(intptr_t)lv_event_get_user_data(e);
+    open_text(muse_provider_name(s_edit_provider), "", true, MUSE_MODEL_KEY_MAX,
+              "API key; empty keeps current", on_model_key_done, s_hatch);
+}
+#endif
+
 static void on_hatch_host_done(const char *text) { muse_settings_set_hatch_host(text); }
 static void on_hatch_vm_done(const char *text) { muse_settings_set_hatch_vm(text); }
 
@@ -852,7 +900,7 @@ static void on_hatch_token_done(const char *text)
     }
 }
 
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#if CONFIG_MUSE_HATCH
 static void on_azure_region_done(const char *text) { muse_settings_set_azure_region(text); }
 static void on_azure_key_done(const char *text)
 {
@@ -941,11 +989,23 @@ static void build_hatch_page(lv_obj_t *tile)
     s_link_status = note(list, "");
     button(list, "Reset pairing", COLOR_DANGER, on_link_reset, &s_link_reset_lbl);
     s_hatch_status = note(list, "");
+#if CONFIG_MUSE_HATCH
+    row(list, NULL, "Chat provider", &s_provider_value, on_provider, NULL);
+    row(list, NULL, "Model ID", &s_model_value, on_model, NULL);
+    for (int i = 1; i < MUSE_PROVIDER_COUNT; i++) {
+        char label[32];
+        snprintf(label, sizeof(label), "%s API key", muse_provider_name(i));
+        row(list, NULL, label, &s_model_key_values[i], on_model_key, (void *)(intptr_t)i);
+    }
+    note(list, "Tap Chat provider to cycle Muse, Gemini, OpenAI and Anthropic. "
+               "Direct providers use their own API billing. Voice input needs an Azure Speech key and region. "
+               "Use model_key.py over USB to upload or remove keys.");
+#endif
     row(list, NULL, "Server", &s_hatch_host, on_hatch_host, NULL);
     row(list, NULL, "VM ID", &s_hatch_vm, on_hatch_vm, NULL);
     row(list, NULL, "Device token", &s_hatch_token, on_hatch_token, NULL);
     row(list, NULL, "SDK token", &s_hatch_sdk_token, on_hatch_sdk_token, NULL);
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#if CONFIG_MUSE_HATCH
     row(list, NULL, "Azure region", &s_azure_region, on_azure_region, NULL);
     row(list, NULL, "Azure Speech key", &s_azure_key, on_azure_key, NULL);
 #endif
@@ -981,6 +1041,16 @@ static void tick_hatch(void)
     lv_obj_set_style_text_color(s_hatch_status, lv_color_hex(h.state == MUSE_HATCH_REACHABLE ? COLOR_OK :
                                                              h.state == MUSE_HATCH_UNREACHABLE ? COLOR_WARN : COLOR_DIM), 0);
 
+#if CONFIG_MUSE_HATCH
+    muse_provider_t provider = muse_settings_provider();
+    set_text(s_provider_value, s_model_error_us && esp_timer_get_time() - s_model_error_us < 5000000 ?
+             "Save failed" : muse_provider_name(provider));
+    char model[MUSE_MODEL_ID_MAX + 1];
+    muse_settings_model(provider, model, NULL);
+    set_text(s_model_value, provider == MUSE_PROVIDER_MUSE ? "Managed by Muse" : model);
+    for (int i = 1; i < MUSE_PROVIDER_COUNT; i++)
+        set_text(s_model_key_values[i], muse_settings_model_ready(i) ? "Set" : "Not set");
+#endif
     char host[MUSE_HOST_MAX + 1], vm[MUSE_VM_MAX + 1];
     muse_settings_hatch_host(host);
     muse_settings_hatch_vm(vm);
@@ -991,7 +1061,7 @@ static void tick_hatch(void)
      * (muse_link_hatch_linked); one typed in here overrides it. */
     set_text(s_hatch_token, muse_settings_hatch_token_len() ? "Set here" :
                             muse_link_hatch_linked() ? "Set" : "Not set");
-#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#if CONFIG_MUSE_HATCH
     char azure_region[MUSE_AZURE_REGION_MAX + 1], azure_key[MUSE_AZURE_KEY_MAX + 1];
     muse_settings_azure_tts(azure_region, azure_key);
     set_text(s_azure_region, azure_region[0] ? azure_region : "Not set");

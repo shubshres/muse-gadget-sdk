@@ -33,6 +33,27 @@
 #define MUSE_HOST_MAX 63
 #define MUSE_VM_MAX 63
 #define MUSE_TOKEN_MAX 1023
+#define MUSE_MODEL_KEY_MAX 511
+#define MUSE_MODEL_ID_MAX 95
+
+typedef enum {
+    MUSE_PROVIDER_MUSE,
+    MUSE_PROVIDER_GEMINI,
+    MUSE_PROVIDER_OPENAI,
+    MUSE_PROVIDER_ANTHROPIC,
+    MUSE_PROVIDER_COUNT,
+} muse_provider_t;
+
+const char *muse_provider_name(muse_provider_t provider);
+const char *muse_provider_id(muse_provider_t provider);
+muse_provider_t muse_settings_provider(void);
+esp_err_t muse_settings_set_provider(muse_provider_t provider);
+void muse_settings_model(muse_provider_t provider, char model[MUSE_MODEL_ID_MAX + 1],
+                         char key[MUSE_MODEL_KEY_MAX + 1]);
+bool muse_settings_model_ready(muse_provider_t provider);
+esp_err_t muse_settings_set_model_key(muse_provider_t provider, const char *key);
+esp_err_t muse_settings_set_model_id(muse_provider_t provider, const char *model);
+
 #define MUSE_AZURE_REGION_MAX 31
 #define MUSE_AZURE_KEY_MAX 127
 
