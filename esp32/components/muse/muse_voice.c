@@ -46,7 +46,8 @@ static const char *TAG = "muse_voice";
 /* Pick once per reply so acknowledgements don't shuffle the caption. */
 static const char *thinking_caption(void)
 {
-    static const char *const captions[] = {
+static const char *const captions[] = {
+        /* --- Original List --- */
         "WARMING UP MY BRAIN...",
         "SHAKING THE IDEA JAR...",
         "ASKING MY INNER OWL...",
@@ -60,6 +61,74 @@ static const char *thinking_caption(void)
         "THINKING CAP: ACTIVATED!",
         "COOKING UP AN ANSWER...",
         "LET ME COOK! LET ME COOK NOW! LET ME COOK! I SAID LET ME COOK!...",
+
+        /* --- Internet Culture & Memes --- */
+        "CONSULTING THE LORE...",
+        "SUMMONING THE VIBE SHIFT...",
+        "DOWNLOADING MORE RAM...",
+        "LOADING... PLEASE DO NOT TURN OFF YOUR COMPUTER...",
+        "BUFFERING AT 99%...",
+        "DELETING SYSTEM32 FOR MAXIMUM SPEED...",
+        "THE HAMSTER IS RUNNING AS FAST AS HE CAN...",
+        "CHARGING THE SINGLE SHARED BRAINCELL...",
+        "QUEUEING UP THE DIAL-UP NOISE...",
+        "CONSULTING THE COUNCIL OF DOGES...",
+        "BRAIN IS GIVING '404 NOT FOUND'...",
+        "RUNNING ON ICED COFFEE AND PURE ANXIETY...",
+        "ACTIVATING 'VERY DEMURE, VERY MINIMALIST' THOUGHTS...",
+        "BETA TESTING A GOOD IDEA...",
+        "PERFORMING A MENTAL SPEEDRUN...",
+        "TOUCHING GRASS TO UNLOCK KNOWLEDGE...",
+        "AURA +1000 WHILE I PONDER...",
+        "MAIN CHARACTER MOMENT LOADING...",
+        "WAITING FOR THE ALGORITHM TO DECIDE...",
+        "THE CELESTIAL JUKEBOX IS SPINNING...",
+
+        /* --- Gen Z / TikTok Slang --- */
+        "LOCKED IN. DO NOT DISTURB...",
+        "COOKING A GOURMET MEAL IN MY MIND...",
+        "SIMMERING ON THAT...",
+        "YAPPIN' TO MYSELF...",
+        "MANIFESTING THE CORRECT ANSWER...",
+        "IN MY DEEP THOUGHT ERA...",
+        "SENDING TELEPATHIC PING...",
+        "PROCESSING AT 3AM THOUGHT SPEEDS...",
+        "VIBING WITH THE VOID...",
+        "MAKING IT MAKE SENSE...",
+        "FS IN THE CHAT FOR MY LAST BRAINCELL...",
+        "ABSOLUTELY NO THOUGHTS, JUST ELEVATOR MUSIC... OK WAIT, GOT ONE...",
+
+        /* --- Pop Culture & Current Events Vibe --- */
+        "CONSULTING CHATGPT ABOUT CHATGPT...",
+        "CHECKING THE STOCK MARKET OF MY IDEAS...",
+        "PULLING UP THE WIKIPEDIA RABBIT HOLE...",
+        "NAVIGATING THE MULTIVERSE OF POSSIBILITIES...",
+        "DECODING THE MATRIX...",
+        "CONSULTING THE TIME TRAVELERS...",
+        "WAITING FOR MARS COLONIZATION APPROVAL...",
+        "ANALYZING THE QUANTUM FLUCTUATIONS...",
+        "REBOOTING THE SIMULATION...",
+        "CONSULTING THE ORACLE OF DELPHI...",
+        "CHECKING MY HOROSCOPE FOR ANSWERS...",
+        "ASKING THE PIGEONS OUTSIDE...",
+        "CONSULTING THE COUNCIL OF CATS...",
+
+        /* --- Pure Comedy & Relatable Chaos --- */
+        "HOLD ON, LET ME OVERTHINK THIS...",
+        "MASHING THE KEYBOARD IN THOUGHT...",
+        "SEARCHING FOR THAT ONE MEMORY FROM 2012...",
+        "BLOWING INTO THE CARTRIDGE...",
+        "SHAKING THE SNOWGLOBE OF MY MIND...",
+        "STARING BLANKLY INTO THE MIDDLE DISTANCE...",
+        "WAITING FOR INSPIRATION TO STRIKE (LIKE LIGHTNING)...",
+        "TURNING IT OFF AND ON AGAIN...",
+        "PASSING THE THOUGHT TO THE NEXT DEPARTMENT...",
+        "WRITING A STRONGLY WORDED MENTAL LETTER...",
+        "CONSULTING MY ANCESTORS...",
+        "GATHERING THE SAGE AND CRYSTALS...",
+        "RUNNING THE NUMBERS (THEY ARE FAKE)...",
+        "PERFORMING AN EXORCISM ON A STUPID IDEA...",
+        "STUCK IN THE THOUGHT DRIVE-THRU..."
     };
     return captions[esp_random() % (sizeof(captions) / sizeof(captions[0]))];
 }
