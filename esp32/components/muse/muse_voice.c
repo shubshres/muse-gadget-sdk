@@ -211,11 +211,17 @@ static void save_last_answer(int16_t *pcm, size_t frames)
         free(pcm);
         return;
     }
-    if (!muse_hatch_turn_reply_text(text, cap)) {
+    char prompt[512];
+    size_t have = muse_hatch_turn_prompt_text(prompt, sizeof(prompt));
+    size_t used = have ? (size_t)snprintf(text, cap, "You:\n%s\n\nReply:\n", prompt) : 0;
+    if (used >= cap) used = cap - 1;
+    size_t reply = muse_hatch_turn_reply_text(text + used, cap - used);
+    if (!have && !reply) {
         free(text);
         free(pcm);
         return;
     }
+    if (have && !reply) strlcat(text, "Response stopped before a reply arrived.", cap);
     xSemaphoreTake(s_last_lock, portMAX_DELAY);
     free(s_last_text);
     free(s_last_pcm);
@@ -231,6 +237,11 @@ void muse_voice_cancel_response(void)
     atomic_store(&s_replay_request, false);
     atomic_store(&s_pause_response, false);
     atomic_store(&s_cancel_response, true);
+}
+
+bool muse_voice_paused(void)
+{
+    return atomic_load(&s_pause_response);
 }
 
 void muse_voice_toggle_pause(void)
@@ -529,6 +540,8 @@ static bool hatch_reply(bool *delivered)
     for (;;) {
         if (atomic_exchange(&s_cancel_response, false)) {
             ESP_LOGI(TAG, "reply stopped by screen gesture");
+            save_last_answer(replay_pcm, replay_frames);
+            replay_pcm = NULL;
             muse_hatch_turn_cancel();
             *delivered = true;   /* an intentional stop must not resend a saved note */
             muse_state_set_level(0);
@@ -573,6 +586,8 @@ static bool hatch_reply(bool *delivered)
         }
         if (got_event(MUSE_PTT_DOWN)) {
             ESP_LOGI(TAG, "reply interrupted");
+            save_last_answer(replay_pcm, replay_frames);
+            replay_pcm = NULL;
             muse_hatch_turn_cancel();
             muse_state_set_level(0);
             free(replay_pcm);

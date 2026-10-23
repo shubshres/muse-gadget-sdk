@@ -31,6 +31,7 @@
 #include "freertos/task.h"
 
 #include "muse_settings.h"
+#include "muse_text.h"
 
 static const char *TAG = "muse_azure_tts";
 #define MAX_MP3 (512 * 1024)
@@ -167,7 +168,8 @@ bool muse_azure_tts_start(uint32_t generation, int message, const char *text)
         job->result.message = message;
         muse_settings_azure_tts(job->region, job->key);
         strlcpy(job->text, text, sizeof(job->text));
-        if (!valid_region(job->region) || !job->key[0] ||
+        muse_text_plain_reply(job->text);
+        if (!valid_region(job->region) || !job->key[0] || !job->text[0] ||
             xTaskCreatePinnedToCoreWithCaps(worker, "azure_tts", 12 * 1024, job, 4, NULL, 0,
                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
             memset(job->key, 0, sizeof(job->key));

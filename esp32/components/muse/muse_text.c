@@ -277,3 +277,124 @@ const char *muse_text_showable(const char *text, char *buf, size_t cap)
     muse_text_to_ascii(buf, cap);
     return buf;
 }
+
+/* Plain text for small captions and speech, rather than speaking Markdown
+ * punctuation. Work in place: the output never grows. Keep code contents,
+ * ordinary punctuation, snake_case, and arithmetic such as 2 * 3. */
+void muse_text_plain_reply(char *text)
+{
+    char *r = text, *w = text;
+    const char *label_end = NULL, *link_end = NULL;
+    bool line_start = true, fenced = false, code = false;
+    char fence_char = 0;
+    while (*r) {
+        if (r == label_end) {
+            r = (char *)link_end;
+            label_end = link_end = NULL;
+            continue;
+        }
+        if (line_start) {
+            char *p = r;
+            while (*p == ' ' || *p == '\t') p++;
+            if ((!strncmp(p, "```", 3) || !strncmp(p, "~~~", 3)) &&
+                (!fenced || *p == fence_char)) {
+                fence_char = *p;
+                fenced = !fenced;
+                while (*p && *p != '\n') p++;
+                if (*p) p++;
+                r = p;
+                if (w > text && w[-1] != '\n') *w++ = '\n';
+                continue;
+            }
+            if (!fenced) {
+                char *end = p;
+                unsigned rule = 0;
+                while (*end && *end != '\n' && strchr(" *-_~|:+\t\r", *end)) {
+                    if (*end != ' ' && *end != '\t' && *end != '\r') rule++;
+                    end++;
+                }
+                if (rule >= 3 && (!*end || *end == '\n')) {
+                    r = *end ? end + 1 : end;
+                    continue;
+                }
+                char *heading = p;
+                while (*p == '#') p++;
+                if (p > heading && p - heading <= 6 && (*p == ' ' || *p == '\t')) {
+                    while (*p == ' ' || *p == '\t') p++;
+                    r = p;
+                } else {
+                    r = heading;
+                    if ((*r == '-' || *r == '+' || *r == '*') && r[1] == ' ') r += 2;
+                    else while (*r == '>' && (r[1] == ' ' || r[1] == '>')) {
+                        r++;
+                        if (*r == ' ') r++;
+                    }
+                }
+            }
+            line_start = false;
+            if (!*r) break;
+        }
+        if (*r == '\n') {
+            *w++ = *r++;
+            line_start = true;
+            continue;
+        }
+        if (fenced) { *w++ = *r++; continue; }
+        if (*r == '`') {
+            code = !code;
+            while (*r == '`') r++;
+            continue;
+        }
+        if (code) { *w++ = *r++; continue; }
+        if (*r == '\\' && r[1] && strchr("\\`*_{}[]()>#+-.!~", r[1])) {
+            r++;
+            *w++ = *r++;
+            continue;
+        }
+        if (!label_end && (*r == '[' || (*r == '!' && r[1] == '['))) {
+            char *label = r + (*r == '!' ? 2 : 1);
+            char *end = strstr(label, "](");
+            if (end && !memchr(label, '\n', (size_t)(end - label))) {
+                char *url = end + 2;
+                unsigned depth = 1;
+                while (*url && depth && *url != '\n') {
+                    if (*url == '(') depth++;
+                    if (*url == ')') depth--;
+                    url++;
+                }
+                if (!depth) { label_end = end; link_end = url; r = label; continue; }
+            }
+        }
+        if (*r == '*') {
+            char *end = r;
+            while (*end == '*') end++;
+            char *left = r;
+            while (left > text && left[-1] == ' ') left--;
+            char *right = end;
+            while (*right == ' ') right++;
+            bool multiply = end - r == 1 && left > text && left[-1] >= '0' && left[-1] <= '9' &&
+                            *right >= '0' && *right <= '9';
+            if (multiply) *w++ = '*';
+            r = end;
+            continue;
+        }
+        if (*r == '_') {
+            bool middle = r > text && ((r[-1] >= 'a' && r[-1] <= 'z') || (r[-1] >= 'A' && r[-1] <= 'Z') ||
+                                      (r[-1] >= '0' && r[-1] <= '9')) &&
+                          ((r[1] >= 'a' && r[1] <= 'z') || (r[1] >= 'A' && r[1] <= 'Z') ||
+                           (r[1] >= '0' && r[1] <= '9'));
+            if (middle) *w++ = '_';
+            r++;
+            continue;
+        }
+        if (*r == '~' && r[1] == '~') { r += 2; continue; }
+        if (*r == '|') { *w++ = ' '; r++; continue; }
+        if ((unsigned char)*r >= 0x80) {
+            size_t bytes;
+            char shown[4];
+            if (muse_text_ascii(r, &bytes, shown) == 0) { r += bytes; continue; }
+        }
+        *w++ = *r++;
+    }
+    *w = '\0';
+}

@@ -912,6 +912,12 @@ bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
     return muse_hatch_caption_at(s_turn.text, at < len ? at : len - 1, out, cap);
 }
 
+size_t muse_hatch_turn_prompt_text(char *out, size_t cap)
+{
+    if (out && cap) out[0] = '\0';
+    return 0;
+}
+
 size_t muse_hatch_turn_reply_text(char *out, size_t cap)
 {
     if (!cap) return 0;

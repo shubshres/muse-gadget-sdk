@@ -296,6 +296,7 @@ int main(void) {
         pump = source[source.index('static void pump_model(void)'):source.index('#endif\n\n/* ---- Task ---- */')]
         code = r'''
 #include <cassert>
+#include <cstdio>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -315,6 +316,7 @@ static size_t s_model_bytes, input_bytes;
 enum phase_t { P_IDLE, P_LISTEN, P_WAIT_REPLY };
 static struct { phase_t phase; uint32_t gen; bool text, end_requested;
     int64_t chat_us, last_event_us, last_content_us;
+    char committed[512];
     struct msg_t { size_t len; } msgs[1];
 } s_turn;
 using msg_t=decltype(s_turn.msgs[0]);
@@ -323,6 +325,7 @@ static muse_model_result_t pending;
 static bool has_result;
 static int replies, failures, console_texts, started, accepted;
 static void muse_model_accept(const muse_model_result_t *) { accepted++; }
+static void muse_text_plain_reply(char *) {}
 static size_t xStreamBufferReceive(int, void *, size_t room, int) {
     size_t n=input_bytes<room?input_bytes:room; input_bytes-=n; return n;
 }

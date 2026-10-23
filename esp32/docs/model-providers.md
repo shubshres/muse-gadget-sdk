@@ -79,3 +79,20 @@ this setting. Update the active build's configuration and reflash using the
 [README procedure](../README.md#update-the-waveshare-175c-and-load-a-gemini-key).
 Certificate and hostname verification remain enabled. Updated firmware logs
 transport/TLS error codes without credentials or response bodies.
+
+Reply text is shown as plain text on the device: Markdown emphasis markers,
+heading/list prefixes, link URLs, and code-fence markers are removed before
+speech and display. Ordinary punctuation and meaningful arithmetic remain.
+The original provider text remains in conversation history and typed USB chat.
+
+Tap the avatar to pause or resume speech. While paused, hold the avatar for
+five seconds to cancel; the bottom caption counts down. Releasing a hold early
+leaves the response paused. Triple-tapping no longer cancels. The replay text
+window supports the same gesture in its text area and shows its countdown in
+a fixed footer.
+
+The replay window includes your most recent transcript (when available) and
+received reply text, including after you stop playback. Its replay icon is
+hidden while the window is open; use the fixed **X** at the top right to close
+it and stop replay audio. The text area scrolls without moving the X. On round
+screens, the window is inset so all four corners remain visible.

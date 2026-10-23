@@ -75,6 +75,7 @@ extern "C" {
 #endif
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_text.h"
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
@@ -2089,6 +2090,7 @@ static void pump_model(void)
                 turn_fail(result.error);
             } else {
                 muse_hatch_report(MUSE_HATCH_REACHABLE, muse_provider_name(s_provider));
+                if (result.prompt) snprintf(s_turn.committed, sizeof(s_turn.committed), "%s", result.prompt);
                 if (result.heard) emit(MUSE_HATCH_EV_HEARD, result.heard);
                 int i = bind_msg("direct-model", nullptr);
                 if (i >= 0) {
@@ -2097,6 +2099,7 @@ static void pump_model(void)
                         muse_hatch_console("text", result.text, "\"msg\":%d", i);
                         s_turn.msgs[i].len = strlen(result.text);
                     } else {
+                        muse_text_plain_reply(result.text);
                         append_text(s_turn.msgs[i], result.text);
                         show_reply_start(s_turn.msgs[i]);
                     }
@@ -2463,6 +2466,13 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
     }
 
     return muse_hatch_caption_at(text, at, out, cap);
+}
+
+extern "C" size_t muse_hatch_turn_prompt_text(char *out, size_t cap)
+{
+    if (!out || !cap) return 0;
+    strlcpy(out, s_turn.committed, cap);
+    return strlen(out);
 }
 
 extern "C" size_t muse_hatch_turn_reply_text(char *out, size_t cap)
