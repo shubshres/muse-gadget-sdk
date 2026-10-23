@@ -95,7 +95,7 @@ static esp_err_t imu_init(void)
     ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL1, 0x40), TAG, "IMU auto-increment");
     ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL2, 0x08), TAG, "IMU accelerometer");
     ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL7, 0x01), TAG, "enable accelerometer");
-    ESP_LOGI(TAG, "QMI8658 accelerometer ready (tilt wake, turn-over silence)");
+    ESP_LOGI(TAG, "QMI8658 accelerometer ready (tilt wake, turn-over sleep)");
     return ESP_OK;
 }
 
@@ -147,8 +147,8 @@ static esp_err_t init(void)
     }
 #if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
     /* On the 1.75C, PWR is push-to-talk. The PMU otherwise cuts power after
-     * a 10 s hold, before the 15 s recording limit. BOOT still powers off
-     * through muse_pmu_power_off() when held. */
+     * a 10 s hold, interrupting long voice notes. Bottom BOOT powers off
+     * through muse_pmu_power_off() after an 8 s hold instead. */
     err = muse_pmu_set_key_shutdown(false);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "couldn't disable PWR key shutdown (%s)", esp_err_to_name(err));

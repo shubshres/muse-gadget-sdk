@@ -60,3 +60,5 @@ float muse_audio_level(const int16_t *mono, size_t frames);
 
 /* Short UI chirp: rising for "go", falling for "done". */
 void muse_audio_chirp(int rising);
+/* Soft ascending startup chime, played once after audio initialization. */
+void muse_audio_startup(void);

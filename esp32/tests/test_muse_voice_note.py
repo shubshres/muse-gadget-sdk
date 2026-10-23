@@ -224,12 +224,12 @@ static size_t xStreamBufferReceive(StreamBufferHandle_t, void *dst, size_t want,
     return n;
 }
 
-static char sent[1 << 20];
-static size_t sent_len, part_len[256], nparts;
-static bool part_end[256];
+static char sent[4 << 20];
+static size_t sent_len, part_len[512], nparts;
+static bool part_end[512];
 static bool send_body(int64_t id, const uint8_t *data, size_t len, bool end_body)
 {
-    CHECK(id == 7 && nparts < 256 && sent_len + len <= sizeof(sent));
+    CHECK(id == 7 && nparts < 512 && sent_len + len <= sizeof(sent));
     CHECK(!nparts || !part_end[nparts - 1]);
     memcpy(sent + sent_len, data, len);
     sent_len += len;
@@ -324,6 +324,7 @@ class HatchVoiceNote(NoteRequestAssertions, unittest.TestCase):
 #include "host_compat.h"
 #include "minimp3.h"
 #include "muse_chat_priv.h"
+#define CONFIG_MUSE_BOARD_WAVESHARE_S3_175C 1
 #define ESP_LOGI(...) ((void)0)
 /* Not assert(): the fakes must still check under -DNDEBUG. */
 #define CHECK(c) do { if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #c); exit(3); } } while (0)
@@ -388,6 +389,10 @@ typedef struct fake_stream *StreamBufferHandle_t;
         self.assert_sent(run, pcm)
         self.assertEqual(run['parts'], [len(HEAD), self.PART_CHARS, self.PART_CHARS, len(TAIL)])
 
+    def test_minute_note_streams_without_truncation(self):
+        pcm = pcm_bytes(60 * self.MIC, 60)
+        self.assert_sent(self.record(pcm, 320), pcm)
+
     def test_uneven_receives_across_several_parts(self):
         pcm = pcm_bytes(self.PART_PCM - 44 + 3 * self.PART_PCM + 1000, 5)
         # Mic data trickling in, then all of it waiting with receives that
@@ -396,11 +401,11 @@ typedef struct fake_stream *StreamBufferHandle_t;
             with self.subTest(step=step, sched=sched):
                 self.assert_sent(self.record(pcm, step, sched=sched), pcm)
 
-    def test_twenty_second_cap_ends_the_note(self):
+    def test_minute_cap_ends_the_note(self):
         # 30000-byte polls put more than the cap in the backlog at once.
-        pcm = pcm_bytes(20 * self.MIC + 3200, 6)
+        pcm = pcm_bytes(60 * self.MIC + 3200, 6)
         run = self.record(pcm, 30000, release=False)
-        self.assert_sent(run, pcm[:20 * self.MIC])
+        self.assert_sent(run, pcm[:60 * self.MIC])
 
 
 if __name__ == '__main__':

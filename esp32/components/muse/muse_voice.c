@@ -134,7 +134,11 @@ static const char *const captions[] = {
 }
 
 
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#define MAX_SECS 60
+#else
 #define MAX_SECS 15
+#endif
 #define TAIL_FRAMES (MUSE_AUDIO_RATE * 12 / 100)   /* capture lag + poll interval, stops before the release click */
 #define MAX_FRAMES (MUSE_AUDIO_RATE * MAX_SECS)
 #define MIN_HELD_FRAMES (MUSE_AUDIO_RATE * 3 / 10)   /* shorter presses are taps, not speech */
@@ -1099,6 +1103,10 @@ static void voice_task(void *arg)
 {
     bool pending_down = false;
     muse_audio_selftest();
+    if (muse_settings_startup_sound() && muse_settings_speaker_on() && !muse_state_asleep()) {
+        muse_audio_startup();
+        pre_reset();
+    }
     for (;;) {
         bool wake = false;
         if (!pending_down) {

@@ -77,7 +77,12 @@ silences the current reply if Muse is thinking or speaking. Tap
 Muse's avatar while it is speaking to pause playback, then tap again to
 resume. The accelerometer must be present for the motion controls; the
 physical buttons continue to work if it isn't. These controls do not apply to
-the separate 1.75 model.
+the separate 1.75 model. Hold the top talk button for up to 60 seconds to
+record; release to send. The bottom button sleeps on a short press and shuts
+down after an eight-second hold, including when the hold starts asleep.
+
+Sound settings include a Power-up sound switch, saved across restarts. The
+short startup chime follows the speaker mute and volume settings.
 
 ## Features
 

@@ -25,6 +25,7 @@
 #include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 #if CONFIG_PM_ENABLE
@@ -69,8 +70,12 @@ static const char *TAG = "muse_input";
 #define DOUBLE_TICKS 35        /* 350 ms: a second aux press within this toggles phone setup */
 
 #define GOODBYE_MS 1500        /* let the goodbye animation play */
-#define HINT_TICKS 60          /* 0.6 s: warn that holding powers off */
-#define LONG_TICKS 150         /* 1.5 s: power off */
+#define HINT_HOLD_US 600000LL
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+#define LONG_HOLD_US 8000000LL  /* bottom BOOT button; top PWR is push-to-talk */
+#else
+#define LONG_HOLD_US 1500000LL
+#endif
 #define SLEEP_CHECK_MS 100
 
 #define SERIAL_RX 1024         /* the driver drops what doesn't fit, so a console line must */
@@ -154,13 +159,14 @@ static void toggle_phone_setup(void)
 }
 
 /*
- * Aux button: short press sleeps, a 1.5 s hold powers off, any press wakes.
+ * Aux button: short press sleeps, a long hold powers off, any press wakes.
  * Two quick presses toggle BLE phone setup, so the sleep waits a moment to
  * see whether a second press follows.
  */
 static void aux_button(bool pressed, bool edge)
 {
-    static int held;
+    static int64_t held_since_us;
+    static bool wake_hold;
     static bool swallow;
     static bool hinted;
     static int sleep_in;    /* ticks until a pending single press sleeps */
@@ -170,10 +176,14 @@ static void aux_button(bool pressed, bool edge)
         set_asleep(true, muse_board->aux_button);
     }
     if (edge && pressed) {
-        held = 0;
+        held_since_us = esp_timer_get_time();
         hinted = false;
+        wake_hold = false;
         swallow = muse_state_asleep();
         if (swallow) {
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+            wake_hold = true;   /* keep holding after wake to power off */
+#endif
             set_asleep(false, muse_board->aux_button);
         } else if (sleep_in) {
             sleep_in = 0;
@@ -182,21 +192,25 @@ static void aux_button(bool pressed, bool edge)
         }
         return;
     }
-    if (pressed && !swallow) {
+    if (pressed && (!swallow || wake_hold)) {
         if (!muse_board->power_off) {
             return;   /* no hold to power off: a press only sleeps */
         }
-        held++;
-        if (held == HINT_TICKS) {
+        int64_t held_us = esp_timer_get_time() - held_since_us;
+        if (held_us >= LONG_HOLD_US) {
+            swallow = true;
+            wake_hold = false;
+            power_off();
+        } else if (!hinted && held_us >= HINT_HOLD_US) {
             uint32_t v = UINT32_MAX;
             muse_state_caption(saved_caption, sizeof(saved_caption), &v);
             muse_state_set_caption("HOLD TO POWER OFF");
             hinted = true;
-        } else if (held == LONG_TICKS) {
-            swallow = true;
-            power_off();
         }
         return;
+    }
+    if (edge && !pressed && wake_hold && hinted) {
+        muse_state_set_caption("%s", saved_caption);
     }
     if (edge && !pressed && !swallow) {
         if (hinted) {

@@ -447,3 +447,23 @@ void muse_audio_chirp(int rising)
     }
     muse_audio_write(buf, N);
 }
+
+void muse_audio_startup(void)
+{
+    enum { NOTE_FRAMES = MUSE_AUDIO_RATE / 10 };
+    static const float notes[] = { 523.25f, 659.25f, 783.99f };
+    int16_t buf[MUSE_AUDIO_CHUNK];
+    for (size_t note = 0; note < sizeof(notes) / sizeof(notes[0]); note++) {
+        for (int at = 0; at < NOTE_FRAMES; at += MUSE_AUDIO_CHUNK) {
+            int n = NOTE_FRAMES - at;
+            if (n > MUSE_AUDIO_CHUNK) n = MUSE_AUDIO_CHUNK;
+            for (int i = 0; i < n; i++) {
+                float x = (float)(at + i) / NOTE_FRAMES;
+                float env = (x < 0.1f ? x / 0.1f : 1.0f) * (1.0f - x) * (1.0f - x);
+                float phase = 2.0f * (float)M_PI * notes[note] * (at + i) / MUSE_AUDIO_RATE;
+                buf[i] = (int16_t)(sinf(phase) * env * 5000.0f);
+            }
+            if (muse_audio_write(buf, n) != ESP_OK) return;
+        }
+    }
+}
