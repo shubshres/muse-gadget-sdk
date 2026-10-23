@@ -91,14 +91,21 @@ int main(void) {
 #define LV_EVENT_SHORT_CLICKED 4
 #define LV_EVENT_PRESSING 5
 typedef int muse_mode_t;
-typedef struct { bool hidden; char text[512]; } lv_obj_t;
+typedef struct { bool hidden; char text[512]; int x,y; } lv_obj_t;
 typedef struct { int code; void *target; } lv_event_t;
 typedef struct { int x,y; } lv_point_t;
 typedef struct { int unused; } lv_indev_t;
 static lv_indev_t touch_device;
 static lv_point_t touch_point;
 static lv_obj_t *scroll_obj;
-static lv_obj_t canvas, face_obj, button, panel, body, label, status;
+static lv_obj_t canvas, face_obj, button, panel, body, label, status, scrim, caption_label, reply_label;
+static lv_obj_t *s_replay_scrim=&scrim, *s_caption_lbl=&caption_label, *s_reply_lbl=&reply_label;
+static struct { struct { int w; } header; } s_muse_src;
+static int s_muse_y;
+#define ART_BLANK_ROWS 3
+#define MUSE_PX_W 64
+#define LV_ALIGN_CENTER 0
+static void lv_obj_align(lv_obj_t *o,int align,int x,int y) { (void)align; o->x=x; o->y=y; }
 static lv_obj_t *s_face=&face_obj, *s_canvas=&canvas, *s_replay_btn=&button, *s_replay_panel=&panel;
 static lv_obj_t *s_replay_body=&body, *s_replay_text=&label, *s_replay_status=&status;
 static bool s_cancel_holding, s_cancel_thinking, s_replay_open, paused, asleep, available=true, active, face=true;
@@ -148,6 +155,11 @@ int main(void) {
     int sizes[][2]={{466,466},{412,412},{240,240},{128,128},{135,240},{800,480}};
     for(int i=0;i<6;i++) {
         s_w=sizes[i][0]; s_h=sizes[i][1]; s_small=s_w<300 || s_h<200; board.round=i<3;
+        s_muse_src.header.w=128; s_muse_y=-20;
+        position_replay();
+        int size=s_small ? 36:48;
+        assert(button.y+size/2 == s_muse_y+64-ART_BLANK_ROWS*2);
+        assert(button.x-size/2 >= -s_w/2+4);
         int w,h; replay_panel_size(&w,&h); assert(w>0 && h>0 && w<s_w && h<s_h);
         if(board.round) {
             double radius=(s_w<s_h?s_w:s_h)/2.0-(s_small?8:16);
@@ -213,14 +225,14 @@ int main(void) {
     event(LV_EVENT_RELEASED); mode=MUSE_MODE_IDLE;
 
     update_replay(mode); assert(!s_replay_btn->hidden);
-    on_replay_click(NULL); assert(s_replay_open && s_replay_btn->hidden && !s_replay_panel->hidden && replayed==1);
+    on_replay_click(NULL); assert(s_replay_open && s_replay_btn->hidden && !s_replay_scrim->hidden && s_caption_lbl->hidden && s_reply_lbl->hidden && replayed==1);
     mode=MUSE_MODE_SPEAKING; paused=true; update_replay(mode);
     assert(strstr(s_replay_status->text,"hold 3s"));
     paused=false; mode=MUSE_MODE_IDLE;
     assert(strstr(s_replay_text->text,"You: Question") && !strchr(s_replay_text->text,'*'));
     update_replay(mode); assert(s_replay_open && s_replay_btn->hidden); /* ticking cannot unhide the replay button */
     on_replay_click(NULL); assert(s_replay_open && replayed==1); /* no toggle-close path */
-    on_replay_close(NULL); assert(!s_replay_open && s_replay_panel->hidden);
+    on_replay_close(NULL); assert(!s_replay_open && s_replay_scrim->hidden);
     update_replay(mode); assert(!s_replay_btn->hidden);
     return 0;
 }

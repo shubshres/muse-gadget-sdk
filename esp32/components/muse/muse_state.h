@@ -87,6 +87,8 @@ float muse_state_idle_secs(void);
 /* Screen sleep (display dark, rendering paused). Waking also pokes. */
 void muse_state_set_asleep(bool asleep);
 bool muse_state_asleep(void);
+/* Timestamp of the actual awake-to-asleep transition, for the AOD deadline. */
+int64_t muse_state_sleep_started_us(void);
 /* For a task with nothing to do asleep: returns once awake, nudged
  * (muse_state_nudge, which doesn't wake the screen) or timeout_ms passes. */
 void muse_state_wait_awake(uint32_t timeout_ms);

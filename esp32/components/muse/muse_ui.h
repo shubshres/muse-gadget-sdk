@@ -28,7 +28,8 @@
  */
 esp_err_t muse_ui_start(void);
 
-/* From any task: the screen has gone dark for sleep (and not yet woken). */
+/* From any task: screen sleep may pause LVGL. False while a clock is pending
+ * or visible, so the two-second delay and minute updates keep running. */
 bool muse_ui_dark(void);
 
 /* From any task: the face tile is the currently visible tile. */

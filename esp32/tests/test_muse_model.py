@@ -86,6 +86,7 @@ int nvs_set_str(int h, const char *key, const char *v) {
 int nvs_set_u8(int h, const char *key, uint8_t v) { if(fail_write) return 9; if(!strcmp(key,"provider")) saved_provider=v; if(!strcmp(key,"pet_sound")) { have_pet_sound=true; saved_pet_sound=v; } return 0; }
 int nvs_set_u16(int h, const char *key, uint16_t v) { return 0; }
 int nvs_commit(int h) { return fail_commit ? 9 : 0; }
+void muse_clock_start(void) {}
 bool muse_link_wifi_get(char *s, char *p) { return false; }
 bool muse_link_wifi_set(const char *s, const char *p) { return false; }
 static void changed(muse_setting_t what) { assert(what==MUSE_SETTING_HATCH); notifications++; }

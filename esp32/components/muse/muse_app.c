@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 
 #include "muse_audio.h"
+#include "muse_clock.h"
 #include "muse_battery.h"
 #include "muse_board.h"
 #include "muse_ble.h"
@@ -93,6 +94,7 @@ void muse_app_run(const muse_board_t *board)
     /* Home Link owns the radios; these just hand it the saved settings. */
     muse_wifi_apply();
     muse_ble_apply();
+    muse_clock_start();
     ESP_LOGI(TAG, "ready: free heap %u internal, %u psram",
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));

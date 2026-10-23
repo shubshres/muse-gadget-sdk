@@ -352,6 +352,7 @@ static const muse_board_t s_board = {
     .display_lock = display_lock,
     .display_unlock = esp_lv_adapter_unlock,
     .set_brightness = set_brightness,
+    .brightness_fade = true,               /* CO5300 0x51: fade in panel memory, not pixel uploads */
     .panel_sleep = panel_sleep,
     .display_pause = display_pause,
     .audio_init = audio_init,

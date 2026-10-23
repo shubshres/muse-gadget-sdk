@@ -24,6 +24,7 @@
 #include "muse_menu.h"
 #include "muse_settings.h"
 #include "muse_settings_ui.h"
+#include "muse_clock.h"
 
 #define SIM_DEFAULT_NAME "MuseGadget-SIM001"
 #define SIM_DEFAULT_SSID "Muse Simulator"
@@ -243,4 +244,12 @@ void muse_console_write(const void *buf, size_t n)
 void muse_input_touch_talk(bool pressed)
 {
     (void)pressed;
+}
+
+/* Network-free simulator: always-on is disabled. */
+bool muse_settings_always_on(void) { return false; }
+bool muse_clock_format(char *clock, size_t clock_size, char *date, size_t date_size)
+{
+    (void)clock; (void)clock_size; (void)date; (void)date_size;
+    return false;
 }

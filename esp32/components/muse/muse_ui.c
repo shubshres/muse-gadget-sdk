@@ -32,6 +32,7 @@
 #include "src/misc/lv_area_private.h"            /* lv_area_intersect, for the ring */
 
 #include "muse_ble.h"
+#include "muse_clock.h"
 #include "muse_board.h"
 #include "muse_input.h"
 #include "muse_chat.h"
@@ -116,6 +117,17 @@ static lv_obj_t *s_dots[2];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
+static lv_obj_t *s_clock_time, *s_clock_date;
+static bool s_clock_lit;
+static int64_t s_sleep_started;
+typedef enum { SLEEP_FADE_NONE, SLEEP_FADE_SCREEN_OUT, SLEEP_FADE_CLOCK_IN, SLEEP_FADE_CLOCK_OUT, SLEEP_FADE_SCREEN_IN } sleep_fade_t;
+static sleep_fade_t s_sleep_fade;
+static int64_t s_fade_started;
+static int s_clock_opacity, s_clock_fade_from, s_screen_fade_from;
+static int s_fade_brightness_from;
+static lv_timer_t *s_sleep_fade_timer;
+static bool s_cover_pressed, s_panel_asleep;
+#define SLEEP_FADE_US 300000LL
 static lv_obj_t *s_pair;
 static lv_obj_t *s_pair_code;
 static lv_obj_t *s_pair_title;
@@ -141,7 +153,7 @@ static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
 static lv_obj_t *s_replay_btn;
-static lv_obj_t *s_replay_panel;
+static lv_obj_t *s_replay_panel, *s_replay_scrim;
 static lv_obj_t *s_replay_text, *s_replay_body, *s_replay_status;
 static bool s_cancel_holding;
 static bool s_cancel_thinking;
@@ -746,7 +758,7 @@ static void on_replay_close(lv_event_t *e)
     clear_cancel_hold();
     muse_voice_cancel_response();
     s_replay_open = false;
-    lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_replay_scrim, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void on_replay_click(lv_event_t *e)
@@ -763,8 +775,10 @@ static void on_replay_click(lv_event_t *e)
         lv_label_set_text(s_replay_text, text);
         lv_obj_update_layout(s_replay_panel);
         lv_obj_scroll_to_y(s_replay_body, 0, LV_ANIM_OFF);
-        lv_obj_remove_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_replay_panel);
+        lv_obj_remove_flag(s_replay_scrim, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_replay_scrim);
+        lv_obj_add_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN);
+        if (s_reply_lbl) lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_replay_btn, LV_OBJ_FLAG_HIDDEN);
         s_replay_open = true;
         muse_voice_replay_last();
@@ -790,7 +804,23 @@ static void replay_panel_size(int *width, int *height)
     *height = h;
 }
 
-static void build_replay(lv_obj_t *face, int x, int y)
+/* Beside Muse, with the button's bottom flush with the visible artwork.
+ * The renderer leaves ART_BLANK_ROWS empty at the bottom of its square. */
+static void position_replay(void)
+{
+    if (!s_replay_btn) return;
+    int px = s_muse_src.header.w;
+    int size = s_small ? 36 : 48;
+    /* The artwork occupies the middle of its transparent canvas. Tuck the
+     * button beside that central body rather than the canvas's far edge. */
+    int x = -px / 4 - 4 - size / 2;
+    int min_x = -s_w / 2 + 4 + size / 2;
+    if (x < min_x) x = min_x;
+    int y = s_muse_y + px / 2 - ART_BLANK_ROWS * px / MUSE_PX_W - size / 2;
+    lv_obj_align(s_replay_btn, LV_ALIGN_CENTER, x, y);
+}
+
+static void build_replay(lv_obj_t *face)
 {
     s_replay_btn = lv_btn_create(face);
     lv_obj_set_size(s_replay_btn, s_small ? 36 : 48, s_small ? 36 : 48);
@@ -798,7 +828,7 @@ static void build_replay(lv_obj_t *face, int x, int y)
     lv_obj_set_style_bg_color(s_replay_btn, lv_color_hex(COLOR_METER_OFF), 0);
     lv_obj_set_style_bg_opa(s_replay_btn, LV_OPA_COVER, 0);
     lv_obj_set_style_shadow_width(s_replay_btn, 0, 0);
-    lv_obj_align(s_replay_btn, LV_ALIGN_CENTER, x, y);
+    position_replay();
     lv_obj_add_flag(s_replay_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_replay_btn, on_replay_click, LV_EVENT_CLICKED, NULL);
     lv_obj_t *icon = make_label(s_replay_btn, &lv_font_montserrat_20, COLOR_LIT);
@@ -808,7 +838,16 @@ static void build_replay(lv_obj_t *face, int x, int y)
 
     int w, h;
     replay_panel_size(&w, &h);
-    s_replay_panel = lv_obj_create(face);
+    /* A modal layer dims every face element and catches touches outside the
+     * card, so the avatar and tile swipe cannot react through the backdrop. */
+    s_replay_scrim = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(s_replay_scrim);
+    lv_obj_set_size(s_replay_scrim, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(s_replay_scrim, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_replay_scrim, LV_OPA_70, 0);
+    lv_obj_add_flag(s_replay_scrim, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(s_replay_scrim, LV_OBJ_FLAG_SCROLLABLE);
+    s_replay_panel = lv_obj_create(s_replay_scrim);
     lv_obj_set_size(s_replay_panel, w, h);
     lv_obj_align(s_replay_panel, LV_ALIGN_CENTER, 0, 0);
     lv_obj_set_style_bg_color(s_replay_panel, lv_color_hex(COLOR_RING_BG), 0);
@@ -818,7 +857,7 @@ static void build_replay(lv_obj_t *face, int x, int y)
     lv_obj_set_style_radius(s_replay_panel, 12, 0);
     lv_obj_set_style_pad_all(s_replay_panel, s_small ? 6 : 12, 0);
     lv_obj_remove_flag(s_replay_panel, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_replay_scrim, LV_OBJ_FLAG_HIDDEN);
 
     int close_px = s_small ? 28 : 40;
     lv_obj_t *close = lv_btn_create(s_replay_panel);
@@ -870,6 +909,7 @@ static void move_muse_t(void *obj, int32_t t)
     set_canvas_px(s_from_px + (s_to_px - s_from_px) * t / 256);
     s_muse_y = s_from_y + (s_to_y - s_from_y) * t / 256;
     lv_obj_align(s_canvas, LV_ALIGN_CENTER, 0, s_muse_y);
+    position_replay();
 }
 
 /* Eases Muse to `px` centred at `y`, from wherever it is now. */
@@ -1040,8 +1080,7 @@ static void build_answer(lv_obj_t *face, int ring_in)
 
     if (muse_board->touch && !muse_board->rim_controls) {
         build_speaker(face, spk_x, spk_y);
-        build_replay(face, s_small ? -s_w / 2 + 28 : spk_x,
-                     s_small ? s_h / 2 - 28 : -spk_y);
+        build_replay(face);
     }
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
@@ -1236,7 +1275,7 @@ static void build_screen(void)
         lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, 0);
         lv_obj_align(s_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         if (muse_board->touch && !muse_board->rim_controls) {
-            build_replay(face, s_w / 2 - 22, -s_h / 2 + 44);
+            build_replay(face);
         }
         return;
     }
@@ -1267,12 +1306,14 @@ static void build_screen(void)
 static void on_cover_event(lv_event_t *e)
 {
     if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        /* Wake on touch; keep the (now clear) cover until release so the tap
-         * doesn't land on whatever is underneath. */
+        s_cover_pressed = true;
+        /* Wake normally, and swallow touches until the fade and release are
+         * both finished. Further taps leave the animation running. */
         muse_state_set_asleep(false);
-        lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
-    } else if (!muse_state_asleep()) {
-        lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        s_cover_pressed = false;
+        if (!muse_state_asleep() && !s_dark && s_sleep_fade == SLEEP_FADE_NONE)
+            lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -1461,12 +1502,27 @@ static void build_overlays(void)
     /* Sleep cover: swallows the waking touch. */
     s_cover = lv_obj_create(lv_layer_top());
     lv_obj_remove_style_all(s_cover);
-    lv_obj_set_size(s_cover, lv_pct(100), lv_pct(100));
+    lv_obj_set_size(s_cover, s_w, s_h);
+    lv_obj_set_pos(s_cover, 0, 0);
+    lv_obj_remove_flag(s_cover, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(s_cover, lv_color_black(), 0);
     lv_obj_add_flag(s_cover, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(s_cover, on_cover_event, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(s_cover, on_cover_event, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_cover, on_cover_event, LV_EVENT_PRESS_LOST, NULL);
+#if LV_FONT_MONTSERRAT_48
+    const lv_font_t *clock_font = s_small ? &lv_font_montserrat_28 : &lv_font_montserrat_48;
+#else
+    const lv_font_t *clock_font = &lv_font_montserrat_28;
+#endif
+    s_clock_time = make_label(s_cover, clock_font, 0xeeeeee);
+    s_clock_date = make_label(s_cover, s_small ? FONT_COMPACT : &lv_font_montserrat_20, 0xcccccc);
+    lv_obj_remove_flag(s_clock_time, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(s_clock_date, LV_OBJ_FLAG_CLICKABLE);
+    /* Native font sizes keep glyphs sharp; no bitmap enlargement. */
+    lv_obj_set_style_text_align(s_clock_date, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
 
     if (s_indev) {
         lv_indev_add_event_cb(s_indev, on_any_press, LV_EVENT_PRESSED, NULL);
@@ -1484,44 +1540,212 @@ static void apply_brightness(int pct)
 
 bool muse_ui_dark(void)
 {
-    return s_dark;
+    return s_dark && !muse_settings_always_on() && !s_clock_lit && s_sleep_fade == SLEEP_FADE_NONE;
 }
 
-/* Returns true while asleep (skip rendering). */
+/* Shift the whole clock through eight positions, once a minute. Keep the
+ * travel proportional to the smaller dimension so compact and round panels
+ * have room for the complete date at every position. */
+static void position_clock(int64_t now)
+{
+    static const int8_t OFFSETS[8][2] = {
+        {-1, -1}, {0, -1}, {1, -1}, {1, 0},
+        {1, 1}, {0, 1}, {-1, 1}, {-1, 0},
+    };
+    int step = (int)((now / 60000000) % 8);
+    int travel = (s_w < s_h ? s_w : s_h) / 12;
+    int x = OFFSETS[step][0] * travel;
+    int y = OFFSETS[step][1] * travel;
+    lv_obj_align(s_clock_time, LV_ALIGN_CENTER, x, (s_small ? -14 : -24) + y);
+    lv_obj_align(s_clock_date, LV_ALIGN_CENTER, x, (s_small ? 20 : 30) + y);
+}
+
+static void set_clock_opacity(int opacity)
+{
+    s_clock_opacity = opacity;
+    lv_obj_set_style_opa(s_clock_time, opacity, 0);
+    lv_obj_set_style_opa(s_clock_date, opacity, 0);
+}
+
+static void sleep_panel(bool asleep)
+{
+    if (asleep == s_panel_asleep) return;
+    if (muse_board->panel_sleep) muse_board->panel_sleep(asleep);
+    s_panel_asleep = asleep;
+}
+
+static void finish_sleep_fade(void)
+{
+    s_sleep_fade = SLEEP_FADE_NONE;
+    s_clock_lit = false;
+    lv_obj_add_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
+    if (!s_cover_pressed) lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
+}
+
+/* The UI timer advances fades without sleeping or blocking input. */
+static int sleep_fade_progress(int64_t now)
+{
+    int64_t elapsed = now - s_fade_started;
+    if (elapsed >= SLEEP_FADE_US) return 255;
+    return elapsed > 0 ? (int)(elapsed * 255 / SLEEP_FADE_US) : 0;
+}
+
+/* Returns true while asleep (skip avatar rendering). */
 static bool update_sleep(void)
 {
     bool asleep = muse_state_asleep();
+    int64_t now = esp_timer_get_time();
     if (asleep && !s_dark) {
         muse_menu_close();
-        apply_brightness(0);
-        if (muse_board->panel_sleep) {
-            muse_board->panel_sleep(true);
-        }
-        lv_obj_set_style_bg_opa(s_cover, LV_OPA_COVER, 0);
+        s_sleep_started = muse_state_sleep_started_us();
+        s_sleep_fade = SLEEP_FADE_SCREEN_OUT;
+        s_fade_started = s_sleep_started;
+        s_clock_lit = false;
+        s_fade_brightness_from = s_brightness > 0 ? s_brightness : 0;
+        set_clock_opacity(0);
+        lv_obj_add_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
+        /* Fade the current image to black before dimming or sleeping the
+         * panel. AOD's two-second deadline stays anchored to the lock press. */
+        lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_cover);
         s_dark = true;
     } else if (!asleep && s_dark) {
         s_dark = false;
-        if (muse_board->panel_sleep) {
-            muse_board->panel_sleep(false);
+        sleep_panel(false);
+        s_clock_fade_from = s_clock_opacity;
+        s_screen_fade_from = lv_obj_get_style_bg_opa(s_cover, 0);
+        s_fade_brightness_from = s_brightness > 0 ? s_brightness : 0;
+        s_sleep_fade = s_clock_lit ? SLEEP_FADE_CLOCK_OUT : SLEEP_FADE_SCREEN_IN;
+        if (muse_board->brightness_fade && !s_clock_lit) {
+            /* The panel still holds the regular screen during a reversed lock
+             * fade; otherwise prepare it once while brightness is zero. */
+            lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
+            lv_obj_invalidate(s_cover);
+            lv_refr_now(lv_obj_get_display(s_cover));
+        } else {
+            lv_obj_invalidate(s_cover);
+            lv_refr_now(lv_obj_get_display(s_cover));
+            apply_brightness(muse_settings_brightness());
         }
-        /* Woken by a button: drop the cover now. Woken by touch: on release. */
-        if (lv_obj_get_style_bg_opa(s_cover, 0) == LV_OPA_COVER) {
-            lv_obj_add_flag(s_cover, LV_OBJ_FLAG_HIDDEN);
-        }
+        s_fade_started = esp_timer_get_time();
+        now = s_fade_started;
     }
-    if (!s_dark) {
-        int target = muse_settings_brightness();
-        if (s_preview_brightness >= 0) {
-            if (s_preview_brightness == target) {
-                s_preview_brightness = -1;
+
+    if (asleep) {
+        if (s_sleep_fade == SLEEP_FADE_SCREEN_OUT) {
+            int p = sleep_fade_progress(now);
+            if (muse_board->brightness_fade) {
+                apply_brightness(s_fade_brightness_from * (255 - p) / 255);
             } else {
-                target = s_preview_brightness;
+                lv_obj_set_style_bg_opa(s_cover, p, 0);
+            }
+            if (p < 255) return true;
+            s_sleep_fade = SLEEP_FADE_NONE;
+            apply_brightness(0);
+            lv_obj_set_style_bg_opa(s_cover, LV_OPA_COVER, 0);
+            /* Keep the AOD panel awake behind black so SLPOUT's settle delay
+             * cannot push the two-second deadline back. */
+            sleep_panel(!muse_settings_always_on());
+        }
+        bool clock = muse_settings_always_on() && now - s_sleep_started >= 2000000;
+        if (clock) {
+            char time[16], date[40];
+            if (!muse_clock_format(time, sizeof(time), date, sizeof(date))) {
+                strcpy(time, "--:--");
+                strcpy(date, "Waiting for local time");
+            }
+            if (strcmp(lv_label_get_text(s_clock_time), time)) {
+                lv_label_set_text(s_clock_time, time);
+            }
+            if (strcmp(lv_label_get_text(s_clock_date), date)) {
+                lv_label_set_text(s_clock_date, date);
+            }
+            position_clock(now);
+            if (!s_clock_lit) {
+                sleep_panel(false);
+                s_clock_lit = true;
+                s_sleep_fade = SLEEP_FADE_CLOCK_IN;
+                s_fade_started = s_sleep_started + 2000000;
+                lv_obj_remove_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
+                /* Repaint the complete black cover, including any pixels the
+                 * panel discarded while asleep, before raising brightness. */
+                lv_obj_set_style_bg_opa(s_cover, LV_OPA_COVER, 0);
+                lv_obj_move_foreground(s_cover);
+                lv_obj_invalidate(s_cover);
+                lv_refr_now(lv_obj_get_display(s_cover));
+            }
+            if (s_sleep_fade == SLEEP_FADE_CLOCK_IN) {
+                int p = sleep_fade_progress(now);
+                set_clock_opacity(p);
+                if (p == 255) s_sleep_fade = SLEEP_FADE_NONE;
+            }
+            apply_brightness(muse_settings_brightness());
+        } else if (s_clock_lit) {
+            s_clock_lit = false;
+            s_sleep_fade = SLEEP_FADE_NONE;
+            set_clock_opacity(0);
+            lv_obj_add_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
+            apply_brightness(0);
+            sleep_panel(!muse_settings_always_on());
+        }
+        return true;
+    }
+
+    if (s_sleep_fade == SLEEP_FADE_CLOCK_OUT) {
+        int p = sleep_fade_progress(now);
+        set_clock_opacity(s_clock_fade_from * (255 - p) / 255);
+        if (p == 255) {
+            lv_obj_add_flag(s_clock_time, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_clock_date, LV_OBJ_FLAG_HIDDEN);
+            s_clock_lit = false;
+            s_sleep_fade = SLEEP_FADE_SCREEN_IN;
+            s_screen_fade_from = 255;
+            s_fade_started += SLEEP_FADE_US;
+            if (muse_board->brightness_fade) {
+                /* Swap clock for the regular screen once, while completely
+                 * dark. Subsequent fade steps only send a brightness byte. */
+                apply_brightness(0);
+                s_fade_brightness_from = 0;
+                lv_obj_set_style_bg_opa(s_cover, LV_OPA_TRANSP, 0);
+                lv_obj_invalidate(s_cover);
+                lv_refr_now(lv_obj_get_display(s_cover));
+                s_fade_started = esp_timer_get_time();
+                now = s_fade_started;
             }
         }
-        apply_brightness(target);
     }
-    return s_dark;
+    if (s_sleep_fade == SLEEP_FADE_SCREEN_IN) {
+        int p = sleep_fade_progress(now);
+        if (muse_board->brightness_fade) {
+            int target = muse_settings_brightness();
+            apply_brightness(s_fade_brightness_from + (target - s_fade_brightness_from) * p / 255);
+        } else {
+            lv_obj_set_style_bg_opa(s_cover, s_screen_fade_from * (255 - p) / 255, 0);
+        }
+        if (p == 255) finish_sleep_fade();
+    }
+    int target = muse_settings_brightness();
+    if (s_preview_brightness >= 0) {
+        if (s_preview_brightness == target) s_preview_brightness = -1;
+        else target = s_preview_brightness;
+    }
+    if (!muse_board->brightness_fade || s_sleep_fade != SLEEP_FADE_SCREEN_IN)
+        apply_brightness(target);
+    return false;
+}
+
+/* Fades have their own 16 ms clock. Avatar rendering stays at its normal
+ * cadence and rests during fades so it cannot hold up panel brightness. */
+static void sleep_fade_tick(lv_timer_t *timer)
+{
+    update_sleep();
+    if (s_sleep_fade == SLEEP_FADE_NONE) lv_timer_pause(timer);
 }
 
 /* Idle's label: whether a press reaches Hatch now or waits for Wi-Fi. */
@@ -1802,11 +2026,13 @@ static void update_status(muse_mode_t mode, float now)
         }
 #endif
         lv_label_set_text(lbl, caption);
-        lv_obj_set_flag(lbl, LV_OBJ_FLAG_HIDDEN, !caption[0]);
-        if (s_reply_lbl) {
-            lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
-        }
+
     }
+    /* Replay owns the transcript while its modal is open. Apply visibility
+     * every frame, including when captions change during playback or close. */
+    lv_obj_set_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN, s_replay_open || answer >= 0 || !caption[0]);
+    if (s_reply_lbl)
+        lv_obj_set_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN, s_replay_open || answer < 0 || !caption[0]);
     update_power(now);
 }
 
@@ -1818,7 +2044,7 @@ static void update_replay(muse_mode_t mode)
     bool visible = !muse_state_asleep() && available && (mode == MUSE_MODE_IDLE || active);
     if (s_replay_open && (!visible || mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_THINKING)) {
         s_replay_open = false;
-        lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_replay_scrim, LV_OBJ_FLAG_HIDDEN);
     }
     lv_obj_set_flag(s_replay_btn, LV_OBJ_FLAG_HIDDEN, !visible || s_replay_open);
     if (s_replay_open) {
@@ -1908,9 +2134,12 @@ static void frame_tick(lv_timer_t *timer)
     }
     update_cancel_hold();
     update_replay(mode);
-    if (update_sleep()) {
+    bool sleeping = update_sleep();
+    if (s_sleep_fade != SLEEP_FADE_NONE) {
+        lv_timer_resume(s_sleep_fade_timer);
         return;
     }
+    if (sleeping) return;
     update_chrome(now);
     if (muse_menu_tick(now)) {
         image_hide_locked();
@@ -1985,6 +2214,8 @@ esp_err_t muse_ui_start(void)
 
     s_image_mutex = xSemaphoreCreateMutex();
     muse_board->display_lock(-1);
+    if (muse_board->brightness_fade)
+        lv_timer_set_period(lv_display_get_refr_timer(disp), 16);
     build_screen();
     if (s_settings) {
         muse_settings_ui_build(s_settings);
@@ -1992,6 +2223,8 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
+    s_sleep_fade_timer = lv_timer_create(sleep_fade_tick, 16, NULL);
+    lv_timer_pause(s_sleep_fade_timer);
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();

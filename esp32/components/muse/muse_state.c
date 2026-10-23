@@ -39,6 +39,7 @@ static volatile float s_progress;
 static volatile int64_t s_last_poke_us;
 static volatile int64_t s_happy_until_us;
 static volatile bool s_asleep;
+static int64_t s_sleep_started_us;
 
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
 static char s_caption[MUSE_CAPTION_MAX];
@@ -208,12 +209,23 @@ void muse_state_set_asleep(bool asleep)
     if (!asleep) {
         muse_state_poke();
     }
+    portENTER_CRITICAL(&s_lock);
+    if (asleep && !s_asleep) s_sleep_started_us = esp_timer_get_time();
     s_asleep = asleep;
+    portEXIT_CRITICAL(&s_lock);
     if (asleep) {
         xEventGroupClearBits(s_wake, AWAKE_BIT);
     } else {
         xEventGroupSetBits(s_wake, AWAKE_BIT);
     }
+}
+
+int64_t muse_state_sleep_started_us(void)
+{
+    portENTER_CRITICAL(&s_lock);
+    int64_t started = s_sleep_started_us;
+    portEXIT_CRITICAL(&s_lock);
+    return started;
 }
 
 bool muse_state_asleep(void)

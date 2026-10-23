@@ -65,6 +65,7 @@ typedef enum {
     ITEM_VOLUME,
     ITEM_SPEAKER,
     ITEM_BRIGHTNESS,
+    ITEM_ALWAYS_ON,
     ITEM_MIC,
     ITEM_SLEEP,
     ITEM_PHONE,
@@ -82,6 +83,7 @@ static const char *const ITEM_NAMES[ITEM_COUNT] = {
     [ITEM_VOLUME] = "Volume",
     [ITEM_SPEAKER] = "Speaker",
     [ITEM_BRIGHTNESS] = "Brightness",
+    [ITEM_ALWAYS_ON] = "Always-on clock",
     [ITEM_MIC] = "Mic gain",
     [ITEM_SLEEP] = "Auto-sleep",
     [ITEM_PHONE] = "Phone setup",
@@ -99,6 +101,7 @@ static const char *const ITEM_ACTIONS[ITEM_COUNT] = {
     [ITEM_VOLUME] = "Change",
     [ITEM_SPEAKER] = "Toggle",
     [ITEM_BRIGHTNESS] = "Change",
+    [ITEM_ALWAYS_ON] = "Toggle",
     [ITEM_MIC] = "Change",
     [ITEM_SLEEP] = "Change",
     [ITEM_PHONE] = "Toggle",
@@ -208,6 +211,9 @@ static void value_text(int item, char *buf, size_t n)
         break;
     case ITEM_BRIGHTNESS:
         snprintf(buf, n, "%d%%", muse_settings_brightness());
+        break;
+    case ITEM_ALWAYS_ON:
+        strlcpy(buf, muse_settings_always_on() ? "On" : "Off", n);
         break;
     case ITEM_MIC:
         snprintf(buf, n, "%d dB", muse_settings_mic_gain());
@@ -398,6 +404,9 @@ static void activate(int item, int direction)
         break;
     case ITEM_BRIGHTNESS:
         muse_settings_set_brightness(value_step(BRIGHT_STEPS, COUNT(BRIGHT_STEPS), muse_settings_brightness(), direction));
+        break;
+    case ITEM_ALWAYS_ON:
+        muse_settings_set_always_on(!muse_settings_always_on());
         break;
     case ITEM_MIC:
         muse_settings_set_mic_gain(value_step(GAIN_STEPS, COUNT(GAIN_STEPS), muse_settings_mic_gain(), direction));

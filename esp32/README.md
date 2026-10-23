@@ -171,6 +171,35 @@ a fresh encrypted session. Because these are community devices, pairing has no
 manufacturer verification and can't prevent an active man-in-the-middle
 attack. Set it up on a network you trust.
 
+## Screen and replay controls
+
+On touch UI boards, **Settings > Screen** holds brightness and the
+**Always-on clock** switch. The switch is off by default and survives a reboot.
+When enabled, locking fades the screen to black, then starts fading in a sharp
+12-hour clock and date two seconds after sleep begins (for example, `2:23` and
+`Fri Oct 23`). The clock uses a native 48 px font (28 px on compact screens), with a smaller
+date beneath it. Only the clock and date appear on black, using your screen
+brightness setting. On wake, the clock fades out, then the normal screen fades
+in from black. Each fade lasts 300 ms and runs to completion; extra taps do not skip it.
+On the Waveshare 1.75C/1.75, fades update every 16 ms, and lock/unlock dim the
+panel directly rather than repainting a full screen at every step.
+The time and date shift together through eight positions every minute, moving
+both horizontally and vertically to reduce static OLED wear. Button-menu boards expose an **Always-on clock** toggle
+alongside brightness.
+
+The clock uses an HTTPS lookup to
+[WorldTime's IP endpoint](https://www.timezone.io/docs/worldtimeapi) when enabled
+and Wi-Fi is connected, then refreshes hourly and on reconnection. Location is
+inferred from the public IP; VPNs and some networks can place it in a different
+timezone. Until the first successful lookup it shows “Waiting for local time”.
+Offline, it keeps ticking with the last known UTC offset; timezone and daylight
+saving changes require a refresh. Keeping the screen and display task available
+uses more battery than normal screen sleep.
+
+Replay sits beside the avatar's lower-left corner, with its bottom aligned to
+the visible avatar. Opening replay dims the whole background and hides the
+normal caption until the replay window closes.
+
 ## Update the Waveshare 1.75C and load a Gemini key
 
 These steps are for the **Waveshare ESP32-S3-Touch-AMOLED-1.75C**. Run them

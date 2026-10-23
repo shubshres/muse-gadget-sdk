@@ -26,6 +26,7 @@
 #include "nvs_flash.h"
 
 #include "muse_link.h"
+#include "muse_clock.h"
 
 static const char *TAG = "muse_settings";
 
@@ -40,6 +41,7 @@ static struct {
     uint8_t mic_gain;
     uint8_t brightness;
     uint16_t sleep_s;
+    bool always_on;
     bool motion_wake;
     bool motion_silence;
     bool wifi_on;
@@ -143,6 +145,7 @@ esp_err_t muse_settings_init(void)
     load_u8("mic_gain", &s.mic_gain);
     load_u8("bright", &s.brightness);
     nvs_get_u16(s_nvs, "sleep_s", &s.sleep_s);
+    if (nvs_get_u8(s_nvs, "always_on", &b) == ESP_OK) s.always_on = b;
     if (nvs_get_u8(s_nvs, "motion_wake", &b) == ESP_OK) s.motion_wake = b;
     if (nvs_get_u8(s_nvs, "motion_silence", &b) == ESP_OK) s.motion_silence = b;
     if (nvs_get_u8(s_nvs, "wifi_on", &b) == ESP_OK) {
@@ -191,6 +194,7 @@ bool muse_settings_pet_sound(void) { return s.pet_sound; }
 int muse_settings_mic_gain(void) { return s.mic_gain; }
 int muse_settings_brightness(void) { return s.brightness; }
 int muse_settings_sleep_s(void) { return s.sleep_s; }
+bool muse_settings_always_on(void) { return s.always_on; }
 bool muse_settings_motion_wake(void) { return s.motion_wake; }
 bool muse_settings_motion_silence(void) { return s.motion_silence; }
 bool muse_settings_wifi_on(void) { return s.wifi_on; }
@@ -294,6 +298,13 @@ void muse_settings_set_sleep_s(int secs)
     nvs_set_u16(s_nvs, "sleep_s", s.sleep_s);
     nvs_commit(s_nvs);
     notify(MUSE_SETTING_SLEEP);
+}
+
+void muse_settings_set_always_on(bool on)
+{
+    s.always_on = on;
+    save_u8("always_on", on);
+    if (on) muse_clock_start();
 }
 
 void muse_settings_set_motion_wake(bool on)

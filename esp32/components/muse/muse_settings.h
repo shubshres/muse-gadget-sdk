@@ -84,6 +84,7 @@ bool muse_settings_pet_sound(void);
 int muse_settings_mic_gain(void);       /* dB, 0..MUSE_MIC_GAIN_MAX */
 int muse_settings_brightness(void);     /* 10..100 */
 int muse_settings_sleep_s(void);        /* 0 = never */
+bool muse_settings_always_on(void);     /* dim clock while asleep; default off */
 bool muse_settings_motion_wake(void);
 bool muse_settings_motion_silence(void);
 bool muse_settings_wifi_on(void);
@@ -105,6 +106,7 @@ void muse_settings_set_pet_sound(bool on);
 void muse_settings_set_mic_gain(int db);
 void muse_settings_set_brightness(int pct);
 void muse_settings_set_sleep_s(int secs);
+void muse_settings_set_always_on(bool on);
 void muse_settings_set_motion_wake(bool on);
 void muse_settings_set_motion_silence(bool on);
 void muse_settings_set_wifi_on(bool on);

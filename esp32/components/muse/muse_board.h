@@ -100,6 +100,7 @@ typedef struct {
     bool (*display_lock)(int timeout_ms);   /* -1 waits forever */
     void (*display_unlock)(void);
     void (*set_brightness)(int pct);        /* 0 = off */
+    bool brightness_fade;                  /* fast panel dimming, without repainting pixels */
     void (*panel_sleep)(bool sleep);        /* screen off; NULL: backlight only */
     /* Screen off with nothing to draw: stops LVGL's task and tick, and touch,
      * so the chip can light-sleep. Buttons still wake it. NULL: LVGL keeps
