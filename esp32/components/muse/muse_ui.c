@@ -45,6 +45,7 @@
 #include "muse_state.h"
 #include "muse_text.h"
 #include "muse_wifi.h"
+#include "muse_voice.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
 #endif
@@ -63,6 +64,8 @@ static const char *TAG = "muse_ui";
 #define SPEAKER_PX 64
 #define SPEAKER_GROW_PX 8       /* how much the speaker button swells while held */
 #define SPEAKER_HOLD_MS 400     /* LVGL's long press */
+#define STOP_TAP_MS 250         /* ignore holds and swipes */
+#define STOP_TAP_GAP_MS 400     /* maximum gap between taps */
 
 #define COLOR_DIM 0x8b84a8
 #define COLOR_CAPTION 0xd8d2ff
@@ -137,6 +140,10 @@ static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering
 static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
+static lv_obj_t *s_replay_btn;
+static lv_obj_t *s_replay_panel;
+static lv_obj_t *s_replay_text;
+static bool s_replay_open;
 static lv_obj_t *s_aux_icon;
 static lv_obj_t *s_image;   /* display.draw_url, over the face */
 #if CONFIG_MUSE_WATCHER_CAMERA
@@ -495,7 +502,11 @@ static void build_button_icons(lv_obj_t *face)
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
-    muse_state_make_happy();
+    if (muse_state_mode(NULL) == MUSE_MODE_SPEAKING) {
+        muse_voice_toggle_pause();
+    } else {
+        muse_state_make_happy();
+    }
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -608,6 +619,69 @@ static void build_speaker(lv_obj_t *face, int x, int y)
     lv_obj_center(s_speaker_icon);
     lv_obj_align(s_speaker, LV_ALIGN_CENTER, x, y);
     show_speaker(muse_settings_speaker_on());
+}
+
+static void on_replay_click(lv_event_t *e)
+{
+    (void)e;
+    if (s_replay_open) {
+        muse_voice_cancel_response();
+        s_replay_open = false;
+        lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    size_t cap = MUSE_LOW_MEM ? 1024 : MUSE_REPLAY_TEXT_CAP;
+    char *text = heap_caps_malloc(cap, MUSE_BIG_CAPS);
+    if (!text) return;
+    size_t n = muse_voice_copy_last_answer(text, cap);
+    if (n) {
+        lv_label_set_text(s_replay_text, text);
+        lv_obj_update_layout(s_replay_panel);
+        lv_obj_scroll_to_y(s_replay_panel, 0, LV_ANIM_OFF);
+        lv_obj_remove_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+        s_replay_open = true;
+        muse_voice_replay_last();
+    }
+    free(text);
+}
+
+static void build_replay(lv_obj_t *face, int x, int y)
+{
+    s_replay_btn = lv_btn_create(face);
+    lv_obj_set_size(s_replay_btn, s_small ? 36 : 48, s_small ? 36 : 48);
+    lv_obj_set_style_radius(s_replay_btn, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(s_replay_btn, lv_color_hex(COLOR_METER_OFF), 0);
+    lv_obj_set_style_bg_opa(s_replay_btn, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(s_replay_btn, 0, 0);
+    lv_obj_align(s_replay_btn, LV_ALIGN_CENTER, x, y);
+    lv_obj_add_flag(s_replay_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_event_cb(s_replay_btn, on_replay_click, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *icon = make_label(s_replay_btn, &lv_font_montserrat_20, COLOR_LIT);
+    lv_label_set_text(icon, LV_SYMBOL_REFRESH);
+    lv_obj_center(icon);
+    lv_obj_remove_flag(icon, LV_OBJ_FLAG_CLICKABLE);
+
+    s_replay_panel = lv_obj_create(face);
+    int w = s_small ? s_w - 16 : s_w - 48;
+    int h = s_small ? s_h - 50 : s_h - 140;
+    if (w > 360) w = 360;
+    if (h > 320) h = 320;
+    lv_obj_set_size(s_replay_panel, w, h);
+    lv_obj_align(s_replay_panel, LV_ALIGN_CENTER, 0, 10);
+    lv_obj_set_style_bg_color(s_replay_panel, lv_color_hex(COLOR_RING_BG), 0);
+    lv_obj_set_style_bg_opa(s_replay_panel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(s_replay_panel, lv_color_hex(COLOR_ACCENT), 0);
+    lv_obj_set_style_border_width(s_replay_panel, 1, 0);
+    lv_obj_set_style_radius(s_replay_panel, 12, 0);
+    lv_obj_set_style_pad_all(s_replay_panel, 12, 0);
+    lv_obj_set_scroll_dir(s_replay_panel, LV_DIR_VER);
+    lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+    s_replay_text = make_label(s_replay_panel, s_small ? &lv_font_unscii_8 : caption_font(), COLOR_CAPTION);
+    lv_obj_set_width(s_replay_text, w - 28);
+    lv_obj_set_style_text_align(s_replay_text, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(s_replay_text, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_remove_flag(s_replay_text, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_move_foreground(s_replay_btn);
 }
 
 static void set_canvas_px(int px)
@@ -798,6 +872,8 @@ static void build_answer(lv_obj_t *face, int ring_in)
 
     if (muse_board->touch && !muse_board->rim_controls) {
         build_speaker(face, spk_x, spk_y);
+        build_replay(face, s_small ? -s_w / 2 + 28 : spk_x,
+                     s_small ? s_h / 2 - 28 : -spk_y);
     }
 
     /* Out of the way while a page is up: the mode name, where Muse was. */
@@ -990,6 +1066,9 @@ static void build_screen(void)
         lv_obj_set_size(s_bar, 0, 3);
         lv_obj_set_style_bg_opa(s_bar, LV_OPA_COVER, 0);
         lv_obj_align(s_bar, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        if (muse_board->touch && !muse_board->rim_controls) {
+            build_replay(face, s_w / 2 - 22, -s_h / 2 + 44);
+        }
         return;
     }
     /* Fixed height: a longer caption ends in dots rather than growing into the ring. */
@@ -1095,6 +1174,46 @@ static void on_any_press(lv_event_t *e)
         muse_input_touch_talk(false);
     }
     muse_state_poke();
+}
+
+/* Input-device events see touches on the whole screen, including the avatar
+ * and reply text. Count short releases only while a reply is in progress. */
+static void on_response_tap(lv_event_t *e)
+{
+    static int64_t pressed_at, last_tap;
+    static int taps;
+    muse_mode_t mode = muse_state_mode(NULL);
+    if (muse_state_asleep() || (mode != MUSE_MODE_THINKING && mode != MUSE_MODE_SPEAKING)) {
+        taps = 0;
+        pressed_at = 0;
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_PRESSED:
+        pressed_at = now;
+        break;
+    case LV_EVENT_PRESS_LOST:
+        taps = 0;
+        pressed_at = 0;
+        break;
+    case LV_EVENT_RELEASED:
+        if (!pressed_at || now - pressed_at > STOP_TAP_MS * 1000LL) {
+            taps = 0;
+            pressed_at = 0;
+            break;
+        }
+        taps = last_tap && now - last_tap <= STOP_TAP_GAP_MS * 1000LL ? taps + 1 : 1;
+        last_tap = now;
+        pressed_at = 0;
+        if (taps == 3) {
+            taps = 0;
+            muse_voice_cancel_response();
+        }
+        break;
+    default:
+        break;
+    }
 }
 
 static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
@@ -1222,6 +1341,7 @@ static void build_overlays(void)
 
     if (s_indev) {
         lv_indev_add_event_cb(s_indev, on_any_press, LV_EVENT_PRESSED, NULL);
+        lv_indev_add_event_cb(s_indev, on_response_tap, LV_EVENT_ALL, NULL);
     }
 }
 
@@ -1561,6 +1681,19 @@ static void update_status(muse_mode_t mode, float now)
     update_power(now);
 }
 
+static void update_replay(muse_mode_t mode)
+{
+    if (!s_replay_btn) return;
+    bool active = muse_voice_replaying();
+    bool available = muse_voice_has_last_answer();
+    bool visible = !muse_state_asleep() && available && (mode == MUSE_MODE_IDLE || active);
+    lv_obj_set_flag(s_replay_btn, LV_OBJ_FLAG_HIDDEN, !visible);
+    if (s_replay_open && (!visible || mode == MUSE_MODE_LISTENING || mode == MUSE_MODE_THINKING)) {
+        s_replay_open = false;
+        lv_obj_add_flag(s_replay_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static volatile bool s_snapshot;
 #if LV_USE_SNAPSHOT
 static volatile int s_bench_page = -1;
@@ -1635,6 +1768,7 @@ static void frame_tick(lv_timer_t *timer)
         }
         s_last_mode = mode;
     }
+    update_replay(mode);
     if (update_sleep()) {
         return;
     }

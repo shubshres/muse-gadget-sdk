@@ -40,6 +40,7 @@
 #include "muse_link.h"
 #include "muse_mem.h"
 #include "muse_menu.h"
+#include "muse_motion.h"
 #include "muse_settings.h"
 #include "muse_state.h"
 #include "muse_ui.h"
@@ -555,6 +556,22 @@ static void input_task(void *arg)
         }
         if (!aux_edge) {
             aux_key(aux_down, false);
+        }
+
+        if (muse_board->poll_motion) {
+            muse_mode_t mode = muse_state_mode(NULL);
+            unsigned motion = muse_board->poll_motion(muse_state_asleep(),
+                                                      mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING,
+                                                      muse_settings_motion_wake(),
+                                                      muse_settings_motion_silence());
+            if (motion & MUSE_MOTION_WAKE) {
+                set_asleep(false, "tilt");
+                muse_state_poke();
+            }
+            if (motion & MUSE_MOTION_SILENCE) {
+                ESP_LOGI(TAG, "silencing reply (turned over)");
+                muse_voice_cancel_response();
+            }
         }
 
         if (s_power_off_requested) {

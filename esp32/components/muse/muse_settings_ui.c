@@ -1178,6 +1178,16 @@ static void on_sleep_now(lv_event_t *e)
     muse_state_set_asleep(true);
 }
 
+static void on_motion_wake(lv_event_t *e)
+{
+    muse_settings_set_motion_wake(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
+static void on_motion_silence(lv_event_t *e)
+{
+    muse_settings_set_motion_silence(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 static void build_sleep_page(lv_obj_t *tile)
 {
     lv_obj_t *list;
@@ -1189,8 +1199,13 @@ static void build_sleep_page(lv_obj_t *tile)
                               (void *)(intptr_t)i);
         lv_obj_set_style_text_color(s_sleep_checks[i], lv_color_hex(COLOR_ACCENT), 0);
     }
+    if (muse_board->poll_motion) {
+        switch_row(list, "Raise to wake", muse_settings_motion_wake(), on_motion_wake);
+        switch_row(list, "Turn over to silence", muse_settings_motion_silence(), on_motion_silence);
+    }
     button(list, LV_SYMBOL_EYE_CLOSE "  Sleep now", COLOR_ACCENT, on_sleep_now, NULL);
-    note(list, "Tap the screen or press either button to wake.");
+    note(list, muse_board->poll_motion ? "Tap the screen, press a button, or raise the board to wake."
+                                      : "Tap the screen or press either button to wake.");
 }
 
 static const char *sleep_name(int secs)

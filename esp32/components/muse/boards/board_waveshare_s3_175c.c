@@ -18,7 +18,9 @@
  * Waveshare ESP32-S3-Touch-AMOLED-1.75C: round 466 px CO5300 AMOLED with
  * CST9217 touch, ES8311 speaker + ES7210 dual mic, AXP2101 PMU. The top
  * button (PWR) is wired to the PMU and, through an inverter, to GPIO3; the
- * bottom one is BOOT (GPIO0).
+ * bottom one is BOOT (GPIO0). Waveshare's examples/esp-idf/04_Immersive_block
+ * uses the QMI8658 at ADDRESS_HIGH on the BSP's shared I2C bus. Its register
+ * addresses and acceleration scale follow the QMI8658C datasheet.
  *
  * The ESP32-S3-Touch-AMOLED-1.75 (CONFIG_MUSE_BOARD_WAVESHARE_S3_175) runs
  * this driver too. Its BSP moves the panel and touch resets to GPIO 39 and 40
@@ -29,16 +31,19 @@
 #include "bsp/esp-bsp.h"
 #include "bsp/touch.h"
 #include "driver/gpio.h"
+#include "driver/i2c_master.h"
 #include "esp_check.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_log.h"
 #include "esp_lv_adapter.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "muse_board.h"
 #include "muse_lcd_bands.h"
 #include "muse_mem.h"
+#include "muse_motion.h"
 #include "muse_pmu.h"
 
 static const char *TAG = "board";
@@ -50,6 +55,13 @@ static const char *TAG = "board";
 #define PMU_KEY_EVERY 2         /* poll the PMU over I2C every 20 ms */
 #else
 #define PWR_GPIO GPIO_NUM_3    /* high while PWR is held (a BSS138 inverts it) */
+#define QMI8658_ADDR 0x6B      /* Waveshare's 1.75C example uses ADDRESS_HIGH */
+#define QMI_WHO_AM_I 0x00
+#define QMI_CTRL1 0x02
+#define QMI_CTRL2 0x03
+#define QMI_CTRL7 0x08
+#define QMI_ACC_X_L 0x35
+#define MOTION_POLL_MS 50
 #endif
 
 static esp_lcd_panel_io_handle_t s_io;
@@ -57,6 +69,53 @@ static esp_lcd_touch_handle_t s_tp;
 static muse_gpio_button_t s_boot;
 #if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
 static muse_gpio_button_t s_pwr;
+static i2c_master_dev_handle_t s_imu;
+static muse_motion_gesture_t s_motion;
+
+static esp_err_t imu_write(uint8_t reg, uint8_t value)
+{
+    uint8_t data[2] = { reg, value };
+    return i2c_master_transmit(s_imu, data, sizeof(data), 50);
+}
+
+static esp_err_t imu_init(void)
+{
+    i2c_device_config_t cfg = {
+        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
+        .device_address = QMI8658_ADDR,
+        .scl_speed_hz = 400000,
+    };
+    ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(bsp_i2c_get_handle(), &cfg, &s_imu), TAG, "add IMU");
+    uint8_t reg = QMI_WHO_AM_I, id;
+    ESP_RETURN_ON_ERROR(i2c_master_transmit_receive(s_imu, &reg, 1, &id, 1, 50), TAG, "read IMU ID");
+    ESP_RETURN_ON_FALSE(id == 0x05, ESP_ERR_NOT_FOUND, TAG, "unexpected IMU ID 0x%02x", id);
+    /* Auto-increment, 2 g range at 31.25 Hz, accelerometer only. The gyro
+     * isn't needed for gravity-based gestures and remains off. */
+    ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL7, 0), TAG, "disable IMU");
+    ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL1, 0x40), TAG, "IMU auto-increment");
+    ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL2, 0x08), TAG, "IMU accelerometer");
+    ESP_RETURN_ON_ERROR(imu_write(QMI_CTRL7, 0x01), TAG, "enable accelerometer");
+    ESP_LOGI(TAG, "QMI8658 accelerometer ready (tilt wake, turn-over silence)");
+    return ESP_OK;
+}
+
+static unsigned poll_motion(bool asleep, bool replying, bool wake_enabled, bool silence_enabled)
+{
+    static int64_t last_poll_us;
+    if (!s_imu) return 0;
+    int64_t now_us = esp_timer_get_time();
+    if (now_us - last_poll_us < MOTION_POLL_MS * 1000) return 0;
+    last_poll_us = now_us;
+    uint8_t reg = QMI_ACC_X_L, data[6];
+    if (i2c_master_transmit_receive(s_imu, &reg, 1, data, sizeof(data), 50) != ESP_OK) return 0;
+    muse_motion_sample_t sample = {
+        .x = (int16_t)((uint16_t)data[0] | (uint16_t)data[1] << 8),
+        .y = (int16_t)((uint16_t)data[2] | (uint16_t)data[3] << 8),
+        .z = (int16_t)((uint16_t)data[4] | (uint16_t)data[5] << 8),
+    };
+    return muse_motion_update(&s_motion, sample, asleep, replying, wake_enabled, silence_enabled,
+                              (uint32_t)(now_us / 1000));
+}
 #endif
 
 static esp_err_t init(void)
@@ -68,6 +127,14 @@ static esp_err_t init(void)
     esp_err_t err = muse_pmu_init(bsp_i2c_get_handle(), true);
 #else
     ESP_RETURN_ON_ERROR(muse_gpio_button_init_high(&s_pwr, PWR_GPIO), TAG, "pwr button");
+    esp_err_t imu_err = imu_init();
+    if (imu_err != ESP_OK) {
+        ESP_LOGW(TAG, "IMU unavailable (%s): motion controls disabled", esp_err_to_name(imu_err));
+        if (s_imu) {
+            i2c_master_bus_rm_device(s_imu);
+            s_imu = NULL;
+        }
+    }
     /* PWR turned the board on and may still be held; don't count that as a press. */
     s_pwr.pressed = gpio_get_level(PWR_GPIO) == 1;
     /* GPIO3 gives the key, so the PMU needn't latch it. Its IRQ line isn't
@@ -78,6 +145,15 @@ static esp_err_t init(void)
         ESP_LOGW(TAG, "PMU unavailable (%s): battery status disabled", esp_err_to_name(err));
         return ESP_OK;
     }
+#if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    /* On the 1.75C, PWR is push-to-talk. The PMU otherwise cuts power after
+     * a 10 s hold, before the 15 s recording limit. BOOT still powers off
+     * through muse_pmu_power_off() when held. */
+    err = muse_pmu_set_key_shutdown(false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "couldn't disable PWR key shutdown (%s)", esp_err_to_name(err));
+    }
+#endif
     /* Only DCDC1 (VCC3V3) and ALDO1 (A3V3, for the codecs) feed anything; the
      * schematic leaves the rest unconnected. Waveshare's AXP2101 example and
      * xiaozhi's board turn them off too. */
@@ -238,6 +314,9 @@ static unsigned poll_buttons(void)
 
 static void wait_buttons(int timeout_ms)
 {
+    /* Keep GPIO wakeups, but sample gravity every 50 ms with the screen off.
+     * If the IMU is missing, restore the normal long low-power wait. */
+    if (s_imu && timeout_ms > MOTION_POLL_MS) timeout_ms = MOTION_POLL_MS;
     muse_gpio_buttons_wait((muse_gpio_button_t *const[]){ &s_pwr, &s_boot }, 2, timeout_ms);
 }
 #endif
@@ -279,6 +358,7 @@ static const muse_board_t s_board = {
     .set_mic_gain = set_mic_gain,
     .poll_buttons = poll_buttons,
 #if !CONFIG_MUSE_BOARD_WAVESHARE_S3_175
+    .poll_motion = poll_motion,
     .wait_buttons = wait_buttons,   /* the 1.75's PWR is on the PMU, so it's polled */
 #endif
     .read_power = muse_pmu_read_power,

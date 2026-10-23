@@ -26,8 +26,8 @@
  *   2. POST /chat/stream with the transcript. The reply arrives as events on
  *      the connection's long-lived POST /chat/subscribe stream: one or more
  *      assistant messages, each delta.message_start / text_append / message_done.
- *   3. Each finished message is shown at reading pace (see start_tts to
- *      speak it with a TTS API of your own; Muse doesn't speak gadget replies).
+ *   3. Stable sentences and word groups can start speech before a message
+ *      finishes; without TTS, text is shown at reading pace.
  * A turn has no explicit end event; like Sidekick, it settles once every
  * message is done and nothing has arrived for a few seconds.
  *
@@ -204,14 +204,21 @@ enum phase_t : uint8_t { P_IDLE, P_LISTEN, P_WAIT_FINAL, P_WAIT_REPLY };
 
 enum tts_t : uint8_t { TTS_NONE, TTS_QUEUED, TTS_ACTIVE, TTS_FINISHED };
 
+#define TTS_SEGMENTS 16
+struct tts_segment_t {
+    uint16_t text_start, text_end;
+    uint32_t pcm_start, pcm_end;   /* pcm_end is set when the segment has drained */
+};
+
 struct msg_t {
     char id[80];
     size_t len;              /* reply text length so far */
     char tail[128];          /* its last characters, for the caption */
     bool done;
     tts_t tts;
-    uint32_t pcm_start;      /* where its speech starts in the reply audio */
-    uint32_t pcm_frames;     /* how long it is; 0 until the MP3 has all arrived */
+    uint16_t tts_offset;     /* first byte not yet synthesized */
+    uint8_t nsegments;
+    tts_segment_t segments[TTS_SEGMENTS];
 };
 
 struct resampler_t {
@@ -1362,6 +1369,34 @@ static void append_text(msg_t &m, const char *text)
     strlcat(m.tail, text, sizeof(m.tail));
 }
 
+/* Only send text that cannot change as more deltas arrive. A sentence can
+ * start immediately; a long sentence is cut at a complete word. Keep one
+ * segment slot for the final tail if the reply has many short sentences. */
+static size_t next_tts_end(const msg_t &m)
+{
+    if (!s_turn.texts) return m.done ? (m.len < UINT16_MAX ? m.len : UINT16_MAX) : 0;
+    const char *text = s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX;
+    size_t len = strlen(text), start = m.tts_offset;
+    if (start >= len) return 0;
+    if (m.nsegments >= TTS_SEGMENTS - 1) return m.done ? len : 0;
+    size_t word_end = 0;
+    for (size_t i = start; i < len; i++) {
+        size_t count = i + 1 - start;
+        bool boundary = text[i] == '\n' || (i + 1 < len && (text[i + 1] == ' ' || text[i + 1] == '\n'));
+        if (count >= 8 && (text[i] == '.' || text[i] == '!' || text[i] == '?' || text[i] == '\n') && boundary) {
+            return i + 1 + (text[i] != '\n' && i + 1 < len ? 1 : 0);
+        }
+        if (count >= 64 && (text[i] == ' ' || text[i] == '\n')) word_end = i + 1;
+        if (count >= 180 && word_end) return word_end;
+    }
+    return m.done ? len : 0;
+}
+
+static void queue_tts_if_ready(msg_t &m)
+{
+    if (m.tts == TTS_NONE && next_tts_end(m)) m.tts = TTS_QUEUED;
+}
+
 /*
  * Shows a reply that hasn't started speaking: its opening lines, which the
  * speech starts with, so they can be read while the audio is on its way.
@@ -1405,9 +1440,7 @@ static void message_done(int i, const char *final_text)
     if (!m.len && final_text && final_text[0]) {
         append_text(m, final_text);
     }
-    if (m.len && m.tts == TTS_NONE) {
-        m.tts = TTS_QUEUED;
-    }
+    if (m.len) queue_tts_if_ready(m);
     ESP_LOGI(TAG, "message %s done (%u chars)", m.id, (unsigned)m.len);
 }
 
@@ -1480,6 +1513,7 @@ static void on_event(cJSON *line)
         } else if (text && text[0]) {
             mark(M_TEXT);
             append_text(m, text);
+            queue_tts_if_ready(m);
             show_reply_start(m);   /* ignored once the speech starts */
         }
     } else if (done || full) {
@@ -1523,32 +1557,59 @@ static void start_tts(void)
     }
     for (int i = 0; i < s_turn.nmsgs; i++) {
         msg_t &m = s_turn.msgs[i];
-        if (m.tts != TTS_QUEUED) {
+        if (m.tts == TTS_FINISHED || (m.done && !m.len)) {
             continue;
         }
-        m.pcm_start = s_turn.pcm_out;
+        /* Do not speak a later message past an unfinished earlier one. */
+        if (m.tts != TTS_QUEUED) return;
+        size_t end = next_tts_end(m);
+        if (!end || m.nsegments >= TTS_SEGMENTS) return;
+#if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
+        if (s_turn.texts && muse_settings_speaker_on() && muse_settings_azure_tts_ready() &&
+            muse_azure_tts_busy()) return;
+#endif
+        tts_segment_t &seg = m.segments[m.nsegments++];
+        seg = { (uint16_t)m.tts_offset, (uint16_t)end, s_turn.pcm_out, 0 };
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
-        show_reply_start(m);
+        if (m.nsegments == 1) show_reply_start(m);
 #if CONFIG_MUSE_BOARD_WAVESHARE_S3_175C
         if (s_turn.texts && muse_settings_speaker_on() && muse_settings_azure_tts_ready()) {
             s_turn.silent = false;
-            m.pcm_frames = 0;
             s_turn.mp3_len = 0;
             s_turn.mp3_ended = false;
             s_turn.kbps = s_turn.down_rate = 0;
             mp3dec_init(&s_turn.dec);
-            if (muse_azure_tts_start(s_turn.gen, i, s_turn.texts + i * TEXT_MAX)) {
-                ESP_LOGI(TAG, "speaking message %s (%u chars)", m.id, (unsigned)m.len);
+            char piece[TEXT_MAX];
+            const char *full = s_turn.texts + i * TEXT_MAX;
+            size_t n = end - m.tts_offset;
+            memcpy(piece, full + m.tts_offset, n);
+            piece[n] = '\0';
+            if (muse_azure_tts_start(s_turn.gen, i, piece)) {
+                ESP_LOGI(TAG, "speaking message %s bytes %u-%u", m.id,
+                         (unsigned)m.tts_offset, (unsigned)end);
                 return;
             }
         }
 #endif
-        m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
         s_turn.silent = true;
-        ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
+        ESP_LOGI(TAG, "showing message %s bytes %u-%u", m.id,
+                 (unsigned)m.tts_offset, (unsigned)end);
         return;
     }
+}
+
+static void finish_tts_segment(void)
+{
+    msg_t &m = s_turn.msgs[s_turn.tts_msg];
+    tts_segment_t &seg = m.segments[m.nsegments - 1];
+    seg.pcm_end = s_turn.pcm_out;
+    m.tts_offset = seg.text_end;
+    size_t available = s_turn.texts ? strlen(s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX) : m.len;
+    m.tts = m.done && m.tts_offset >= available ? TTS_FINISHED : TTS_NONE;
+    if (m.tts == TTS_NONE) queue_tts_if_ready(m);
+    s_turn.tts_msg = -1;
+    s_turn.silent = false;
 }
 
 static void tts_data(const uint8_t *data, size_t len)
@@ -1572,8 +1633,8 @@ static void tts_end(stream_t *s, bool ok)
     if (ok) {
         s_turn.mp3_ended = true;   /* decode() drains the rest, then finishes */
     } else {
-        s_turn.msgs[i].tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
+        s_turn.mp3_len = 0;
+        finish_tts_segment();
     }
 }
 
@@ -1590,8 +1651,6 @@ static void pump_azure_tts(void)
                 s_turn.azure_off = 0;
                 result.audio = nullptr;
             } else {
-                msg_t &m = s_turn.msgs[result.message];
-                m.pcm_frames = (uint32_t)(m.len * MIC_RATE / TEXT_CHARS_PER_S);
                 s_turn.silent = true;
                 ESP_LOGW(TAG, "Azure speech unavailable; showing captions");
             }
@@ -1622,16 +1681,17 @@ static void pace_silently(void)
 {
     static const int16_t zeros[256] = {};
     msg_t &m = s_turn.msgs[s_turn.tts_msg];
-    uint32_t end = m.pcm_start + m.pcm_frames + TEXT_HOLD_S * MIC_RATE;
+    const tts_segment_t &seg = m.segments[m.nsegments - 1];
+    uint32_t end = seg.pcm_start + (seg.text_end - seg.text_start) * MIC_RATE / TEXT_CHARS_PER_S;
+    size_t available = s_turn.texts ? strlen(s_turn.texts + (&m - s_turn.msgs) * TEXT_MAX) : m.len;
+    if (m.done && seg.text_end >= available) end += TEXT_HOLD_S * MIC_RATE;
     while (s_turn.pcm_out < end && xStreamBufferSpacesAvailable(s_out) >= sizeof(zeros)) {
         uint32_t n = end - s_turn.pcm_out < 256 ? end - s_turn.pcm_out : 256;
         xStreamBufferSend(s_out, zeros, n * sizeof(int16_t), 0);
         s_turn.pcm_out += n;
     }
     if (s_turn.pcm_out >= end) {
-        m.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
-        s_turn.silent = false;
+        finish_tts_segment();
     }
 }
 
@@ -1688,16 +1748,8 @@ static void decode(void)
         memmove(s_turn.mp3, s_turn.mp3 + off, s_turn.mp3_len - off);
         s_turn.mp3_len -= off;
     }
-    msg_t &m = s_turn.msgs[s_turn.tts_msg];
-    if (s_turn.mp3_ended && s_turn.kbps > 0) {
-        /* All of it is here: what's decoded plus what the bitrate says the rest holds. */
-        uint32_t rest = (uint32_t)((uint64_t)s_turn.mp3_len * 8 * MIC_RATE / (s_turn.kbps * 1000));
-        m.pcm_frames = s_turn.pcm_out - m.pcm_start + rest;
-    }
     if (s_turn.mp3_ended && !s_turn.mp3_len) {
-        m.pcm_frames = s_turn.pcm_out - m.pcm_start;
-        m.tts = TTS_FINISHED;
-        s_turn.tts_msg = -1;
+        finish_tts_segment();
     }
 }
 
@@ -2220,17 +2272,21 @@ extern "C" muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap)
 
 extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
 {
-    /* The message being spoken: the last one whose speech has started. */
-    const msg_t *m = nullptr;
+    /* Follow the segment actually reaching the speaker, including when a
+     * later Azure request has already begun while earlier audio is buffered. */
     const char *text = nullptr;
+    const tts_segment_t *seg = nullptr;
     for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
         const msg_t &c = s_turn.msgs[i];
-        if (c.tts >= TTS_ACTIVE && c.len && c.pcm_start <= played) {
-            m = &c;
-            text = s_turn.texts + i * TEXT_MAX;
+        for (int k = 0; k < c.nsegments; k++) {
+            const tts_segment_t &candidate = c.segments[k];
+            if (candidate.pcm_start <= played) {
+                seg = &candidate;
+                text = s_turn.texts + i * TEXT_MAX;
+            }
         }
     }
-    if (!m) {
+    if (!seg) {
         /* Nothing said yet: the reply's opening page, to read while the speech is on its way. */
         for (int i = 0; i < s_turn.nmsgs && s_turn.texts; i++) {
             if (s_turn.msgs[i].len) {
@@ -2240,13 +2296,30 @@ extern "C" bool muse_hatch_turn_caption(size_t played, char *out, size_t cap)
         return false;
     }
     size_t len = strlen(text);
-    uint32_t frames = m->pcm_frames ? m->pcm_frames : (uint32_t)(len * MIC_RATE / SPEECH_CHARS_PER_S);
-    size_t at = frames ? (size_t)((uint64_t)(played - m->pcm_start) * len / frames) : 0;
+    uint32_t frames = seg->pcm_end > seg->pcm_start ? seg->pcm_end - seg->pcm_start :
+                      (uint32_t)((seg->text_end - seg->text_start) * MIC_RATE / SPEECH_CHARS_PER_S);
+    size_t at = seg->text_start + (frames ?
+        (size_t)((uint64_t)(played - seg->pcm_start) * (seg->text_end - seg->text_start) / frames) : 0);
+    if (at >= seg->text_end) at = seg->text_end - 1;
     if (at >= len) {
         at = len ? len - 1 : 0;
     }
 
     return muse_hatch_caption_at(text, at, out, cap);
+}
+
+extern "C" size_t muse_hatch_turn_reply_text(char *out, size_t cap)
+{
+    if (!cap) return 0;
+    out[0] = '\0';
+    for (int i = 0; i < s_turn.nmsgs; i++) {
+        const msg_t &m = s_turn.msgs[i];
+        const char *text = s_turn.texts ? s_turn.texts + i * TEXT_MAX : m.tail;
+        if (!m.len || !text[0]) continue;
+        if (out[0]) strlcat(out, "\n\n", cap);
+        strlcat(out, text, cap);
+    }
+    return strlen(out);
 }
 
 extern "C" size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms)

@@ -24,7 +24,12 @@ class ChatSession(unittest.TestCase):
         constants = source[source.index('#define MIC_RATE'):source.index('/* ---- Voice task')]
         types = source[source.index('enum phase_t'):source.index('/* 10 KB')]
         handlers = source[source.index('static int find_msg('):source.index('static void on_chat_ack(')]
+        speech = source[source.index('static void start_tts(void)'):source.index('static void tts_data(')]
+        caption = source[source.index('extern "C" bool muse_hatch_turn_caption('):
+                         source.index('extern "C" size_t muse_hatch_turn_reply_text(')]
         reset = source[source.index('static bool turn_start('):source.index('static void turn_begin(')]
+        reply_text = source[source.index('extern "C" size_t muse_hatch_turn_reply_text('):
+                            source.index('extern "C" size_t muse_hatch_turn_read(')]
         code = r'''
 #include <cassert>
 #include <cstdint>
@@ -42,6 +47,7 @@ static turn_t s_turn;
 static char s_reply_shown[EV_TEXT];
 static int64_t s_last_seq, s_marks[4];
 static int captions, console_events;
+static size_t caption_at;
 enum mark_t { M_TEXT, M_DONE };
 static void mark(mark_t) {}
 static int64_t now_us() { return 12345; }
@@ -50,7 +56,8 @@ static void emit(muse_hatch_ev_t type, const char *) {
 }
 void muse_hatch_console(const char *, const char *, const char *, ...) { console_events++; }
 void muse_hatch_tail_words(const char *text, char *out, size_t cap) { strlcpy(out, text, cap); }
-bool muse_hatch_caption_at(const char *text, size_t, char *out, size_t cap) {
+bool muse_hatch_caption_at(const char *text, size_t at, char *out, size_t cap) {
+    caption_at = at;
     strlcpy(out, text, cap); return text[0];
 }
 static void turn_finish() { s_turn.phase = P_IDLE; }
@@ -58,7 +65,7 @@ static void turn_fail(const char *) { turn_finish(); }
 static bool ensure_connected() { return true; }
 bool muse_hatch_configured() { return true; }
 static void resampler_init(resampler_t *, int, int) {}
-''' + reset + handlers + r'''
+''' + reset + handlers + speech + caption + reply_text + r'''
 static void begin(bool typed = false) {
     assert(turn_start(s_turn.gen + 1, typed));
     s_turn.phase = P_WAIT_REPLY;
@@ -128,12 +135,89 @@ static void bounded_rejections() {
     event("message.assistant", "second", "note", "Second");
     assert(s_turn.nmsgs == 2 && s_turn.msgs[0].done && s_turn.msgs[1].done);
 }
+static void replay_text() {
+    begin();
+    event("message.assistant", "first", "note", "First answer");
+    event("message.assistant", "second", "note", "Second answer");
+    char text[128];
+    assert(muse_hatch_turn_reply_text(text, sizeof(text)) == strlen("First answer\n\nSecond answer"));
+    assert(strcmp(text, "First answer\n\nSecond answer") == 0);
+    assert(muse_hatch_turn_reply_text(text, 8) == 7);
+    assert(strcmp(text, "First a") == 0);
+}
+static void early_speech() {
+    static char textbuf[MAX_MSGS * TEXT_MAX];
+    s_turn.texts = textbuf;
+    begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "note", "The first sentence is ready. ");
+    msg_t &m = s_turn.msgs[0];
+    assert(!m.done && m.tts == TTS_QUEUED);
+    start_tts();
+    assert(m.tts == TTS_ACTIVE && m.nsegments == 1);
+    assert(m.segments[0].text_end == strlen("The first sentence is ready. "));
+    event("delta.text_append", "reply", "", "The second sentence arrives later. ");
+    s_turn.pcm_out = 100;
+    finish_tts_segment();
+    assert(m.tts == TTS_QUEUED && m.tts_offset == m.segments[0].text_end);
+    start_tts();
+    assert(m.nsegments == 2 && m.segments[1].text_start == m.tts_offset);
+    event("delta.message_done", "reply");
+    s_turn.pcm_out = 200;
+    finish_tts_segment();
+    assert(m.tts == TTS_FINISHED && m.tts_offset == m.len);
+
+    begin();
+    event("delta.message_start", "reply", "note");
+    event("delta.text_append", "reply", "note", "An incomplete thought");
+    assert(s_turn.msgs[0].tts == TTS_NONE);
+    event("delta.message_done", "reply");
+    assert(s_turn.msgs[0].tts == TTS_QUEUED);
+
+    begin();
+    event("delta.message_start", "first", "note");
+    event("delta.text_append", "first", "", "Still writing the first message");
+    event("message.assistant", "second", "note", "A later message is complete.");
+    assert(s_turn.msgs[1].tts == TTS_QUEUED);
+    start_tts();
+    assert(s_turn.tts_msg == -1); /* preserve message order */
+    event("delta.message_done", "first");
+    start_tts();
+    assert(s_turn.tts_msg == 0);
+
+    begin();
+    event("delta.message_start", "reply", "note");
+    char long_text[256] = {};
+    for (int i = 0; i < 45; i++) strcat(long_text, "word ");
+    event("delta.text_append", "reply", "", long_text);
+    assert(!s_turn.msgs[0].done && s_turn.msgs[0].tts == TTS_QUEUED);
+    size_t end = next_tts_end(s_turn.msgs[0]);
+    assert(end >= 64 && end <= 180 && long_text[end - 1] == ' ');
+}
+static void segment_caption() {
+    static char textbuf[MAX_MSGS * TEXT_MAX];
+    s_turn.texts = textbuf;
+    begin();
+    strcpy(textbuf, "First. Second.");
+    msg_t &m = s_turn.msgs[0];
+    s_turn.nmsgs = 1;
+    m.len = strlen(textbuf);
+    m.nsegments = 2;
+    m.segments[0] = {0, 7, 0, 100};
+    m.segments[1] = {7, 14, 100, 200};
+    char out[64];
+    assert(muse_hatch_turn_caption(50, out, sizeof(out)) && caption_at == 3);
+    assert(muse_hatch_turn_caption(150, out, sizeof(out)) && caption_at == 10);
+}
 int main(int argc, char **argv) {
     assert(argc == 2);
     switch (atoi(argv[1])) {
     case 0: rejected_deltas(); break;
     case 1: valid_parents(); break;
     case 2: bounded_rejections(); break;
+    case 3: replay_text(); break;
+    case 4: early_speech(); break;
+    case 5: segment_caption(); break;
     default: return 2;
     }
 }
@@ -166,3 +250,12 @@ int main(int argc, char **argv) {
 
     def test_rejection_capacity_preserves_correlation(self):
         self.run_case(2)
+
+    def test_replay_assembles_full_completed_reply(self):
+        self.run_case(3)
+
+    def test_speech_starts_at_stable_text_and_drains_later_segments(self):
+        self.run_case(4)
+
+    def test_caption_tracks_the_audio_segment_being_played(self):
+        self.run_case(5)

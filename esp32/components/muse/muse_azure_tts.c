@@ -138,10 +138,10 @@ static void worker(void *arg)
     }
     free(body);
     memset(job->key, 0, sizeof(job->key));
-    xQueueSend(s_results, &job->result, portMAX_DELAY);
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_busy = false;
     xSemaphoreGive(s_lock);
+    xQueueSend(s_results, &job->result, portMAX_DELAY);
     free(job);
     vTaskDelete(NULL);
 }
@@ -186,4 +186,13 @@ bool muse_azure_tts_start(uint32_t generation, int message, const char *text)
 bool muse_azure_tts_poll(muse_azure_tts_result_t *result)
 {
     return s_results && xQueueReceive(s_results, result, 0) == pdTRUE;
+}
+
+bool muse_azure_tts_busy(void)
+{
+    if (!s_lock) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool busy = s_busy;
+    xSemaphoreGive(s_lock);
+    return busy;
 }

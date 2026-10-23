@@ -31,3 +31,4 @@ typedef struct {
 bool muse_azure_tts_init(void);
 bool muse_azure_tts_start(uint32_t generation, int message, const char *text);
 bool muse_azure_tts_poll(muse_azure_tts_result_t *result);
+bool muse_azure_tts_busy(void);
